@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!app.mjs
+!main.mjs
+!cloud-routes.mjs
+!cloud-store.mjs
+!assistant.mjs
+!market.mjs

@@ -1,0 +1,269 @@
+FINANCE ATLAS - PERSONAL-USE FUNCTIONAL AND TECHNICAL FEATURES
+Status snapshot: 14 November 2026
+
+1. PURPOSE AND SCOPE
+
+Finance Atlas is a personal finance workspace for understanding income,
+spending, balances, credit-card payments, recurring obligations, EMIs, savings
+and financial goals. It is intended for one person's use across a Windows
+computer and, eventually, a web browser on a phone, tablet or laptop.
+
+The primary outcome is a trustworthy picture of money already received or
+spent, money still owed and cash needed before the next salary. The app is a
+record-keeping and planning tool. It does not initiate bank payments.
+
+This document distinguishes:
+  CURRENT   - functionality present in the Next.js/Tauri application.
+  PROTOTYPE - implemented in the separate GCP AI variant but not fully connected
+              or validated against a live cloud service.
+  PLANNED   - a desired feature that still requires design and implementation.
+
+The current Windows app and the experimental GCP AI variant are separate
+builds with separate desktop storage profiles. The older Finance_Atlas_v10.html
+is a separate application with a different storage and security model.
+
+2. CORE FUNCTIONAL FEATURES - CURRENT
+
+2.1 Dashboard and navigation
+  - Overview of liquid balances, income, expenses, savings and cash flow.
+  - Summaries and links for budgets, EMIs, card dues, activity and goals.
+  - Desktop navigation with a back action and collapsible sidebar.
+  - Light and dark themes, privacy display controls, responsive layouts and
+    reduced-motion options.
+
+2.2 Accounts and balances
+  - Record bank, cash and credit-card accounts with opening dates and balances.
+  - Maintain card limits, statement dates and payment due dates.
+  - Record dated balance confirmations and view calculated balances.
+  - Navigate from an account/card to the relevant financial details.
+  - Existing balance-confirmation edge cases still need further review,
+    particularly backdated and same-day entries.
+
+2.3 Transactions
+  - Record income, expenses, refunds, bank/cash transfers and card repayments.
+  - Choose date, amount, category, payment account, notes and payment method.
+  - Link a card repayment to an issued statement when applicable.
+  - Schedule future transactions and confirm when they actually post.
+  - Split payments, use quick-entry templates, search and filter transactions.
+  - Use tags to group event- or theme-related expenses.
+  - Review a pasted bank/card alert locally for suggested fields; the user
+    reviews and saves the transaction. This is rules-based, not AI or
+    automatic SMS access. Pending or failed notices are not treated as cleared.
+  - Recorded financial history uses reversals or corrective entries rather
+    than silently changing settled amounts. Correction UX needs improvement.
+
+2.4 Bills, subscriptions and insurance
+  - Track recurring bills, subscriptions, recharges and insurance policies.
+  - Supported schedules include one-time, monthly, quarterly, yearly and
+    28-, 56- or 84-day cycles.
+  - Link plans to bank accounts or credit cards and review upcoming occurrences.
+  - Record pending and cleared payments and link matching existing debits.
+  - Auto-debit matching links a uniquely matching debit already recorded; it
+    does not verify a bank debit or automatically read a bank account.
+  - Policy details include coverage information, relevant dates and references.
+  - Older monthly bill plans can be reviewed and migrated with a recovery
+    checkpoint while preserving historical transactions.
+
+2.5 Credit cards and statements
+  - Record bank-issued statement totals, issue dates and due dates.
+  - View card statements and outstanding amounts in grid or list form.
+  - Record pending, partial or settled card repayments and link existing ones.
+  - Preserve settled payment history and use reversals for corrections.
+  - Track card use, available credit and eligible card-linked EMI commitments.
+  - Treat card purchases and repayments as different events so a repayment is
+    not counted again as a purchase expense.
+  - Statement snapshots may include prior unpaid balances: do not add multiple
+    overlapping statement balances together as independent debt.
+
+2.6 EMIs, debt and money lent
+  - Track bank-loan and card-linked EMI plans, installments and due dates.
+  - View paid, remaining and scheduled installments with original paid values.
+  - Separate personal debt from Money Given plans representing money lent.
+  - Track recoveries against money lent; actual charges to the user's own card
+    remain part of that card's obligations and utilization.
+  - Track known outstanding principal and fixed-rate payoff scenarios where
+    adequate balances, minimum payments and rate information are available.
+
+2.7 Salary, budgets and payment calendar
+  - Configure salary amount, receiving account, date and weekend adjustment.
+  - Use calendar-month or salary-cycle reporting periods where configured.
+  - Set category budgets, compare actual spending, and optionally carry unused
+    amounts between periods.
+  - View actual income, actual outflow, expected outflow and EMI information.
+  - Review bills, EMIs and card dues in a payment calendar and day-grouped
+    financial timeline.
+  - Estimate how much salary should be reserved or transferred to accounts
+    for their linked dues, subject to the data entered and available balances.
+  - Funding suggestions are estimates; they do not transfer money.
+
+2.8 Goals, insights and reports
+  - Record savings goals and allocated amounts.
+  - Review a 12-period plan and estimated future cash flow.
+  - Review recurring costs, category spending, merchants and event tags.
+  - Use tags such as #travel, #house or an event name to group transactions.
+  - Display monthly reports and export CSV, JSON, spreadsheet and receipt ZIP
+    files. These ordinary exports are readable unless separately protected.
+
+2.9 Reconciliation, imports and receipts
+  - Preview bank/card CSV statements before importing or matching entries.
+  - Select day-first or month-first numeric date format; ISO and named-month
+    dates are handled independently. Review ambiguous dates and duplicates.
+  - Classify or link transfers and card repayments during reconciliation.
+  - Attach supported images/PDFs to transactions, within current size limits.
+  - Preview a legacy Finance Atlas JSON/receipt ZIP or encrypted backup before
+    replacement. Older JSON files may omit separately stored receipts.
+
+2.10 Backups, reminders and settings
+  - Encrypted backup downloads, local recovery snapshots and previewed restore.
+  - Select a backup folder; scheduled copies run while the workspace is open
+    and unlocked. A chosen OneDrive folder may sync according to OneDrive's
+    own settings. Retain a separate backup and the passphrase.
+  - In-app reminders and optional system notifications while the app is open
+    and unlocked; reminders are not guaranteed after the app is closed.
+  - Optional inactivity locking; unsaved form edits are discarded on lock.
+  - Manage categories, appearance, navigation, reporting preferences and
+    available backup controls.
+
+3. TECHNICAL FEATURES - CURRENT
+
+3.1 Application architecture
+  - Next.js/React and TypeScript frontend and shared finance calculations.
+  - Tauri desktop shell embeds the frontend in a Windows WebView; it is a
+    desktop application but still depends on the WebView runtime.
+  - Static web build can be served separately. Desktop and browser storage
+    are separate; migration occurs through an explicit backup/restore flow.
+  - Financial amounts are handled in integer minor units for calculations.
+  - Financial logic validates account links, dates and values and preserves
+    settled history through correction/reversal records.
+
+3.2 Local storage and security
+  - Ledger and supported receipt bytes are stored in an encrypted IndexedDB
+    vault. Encryption uses AES-256-GCM and a PBKDF2-SHA256-derived passphrase
+    key with 600,000 iterations; the key is held in memory while unlocked.
+  - The vault passphrase is required to unlock or restore encrypted data.
+    There is no implemented passphrase-recovery escrow.
+  - Local saves check vault revisions and reject stale writes; they do not
+    automatically merge concurrent edits.
+  - The local-only desktop build uses a restrictive network policy.
+  - Browser and desktop vaults, recovery snapshots and backup files can still
+    be lost; clearing browser data can erase browser-stored vaults/snapshots.
+  - The old standalone HTML's login does not encrypt its underlying storage.
+  - Data is exposed to the running app while unlocked; device protection and
+    trustworthy software remain important. Visual privacy mode is not access
+    control, and ordinary JSON/CSV/XLSX/ZIP exports are not encrypted.
+
+3.3 Backup and storage limits
+  - Local recovery retains up to 25 snapshots; encrypted backup restore is
+    previewed before replacement.
+  - The current encrypted vault is a whole-ledger snapshot with a 30 MB limit;
+    receipt limits include 100 files, 15 MB total and 4 MB per file.
+  - Cloning, validating and serializing the full ledger can affect performance
+    for large datasets. These limits do not guarantee practical performance.
+
+3.4 Quality and reliability
+  - Unit tests cover core finance calculations, card payments, reversals,
+    schedules, imports, backup compatibility and selected legacy comparisons.
+  - Browser smoke tests use fictional data to exercise key flows and layouts;
+    native tests check selected Tauri backup and storage behavior.
+  - Tests do not establish that every calculation, financial edge case,
+    device or security threat has been covered.
+
+4. EXPERIMENTAL GOOGLE CLOUD AND AI VARIANT - PROTOTYPE
+
+  - Separate Next.js/Tauri source copy and desktop identity.
+  - A web-only, opt-in Gemini budgeting preview sends the selected period and
+    four aggregate amounts only after user consent and an explicit request.
+  - The prototype API validates the allowed aggregate fields, verifies a
+    Firebase ID token against a configured owner, rate-limits requests and
+    uses no-store responses. AI is disabled unless explicitly configured.
+  - A configured backend can call Gemini through Vertex AI using its Google
+    Cloud service identity. The endpoint has been tested with a fake provider;
+    it has not been validated against a live deployment.
+  - The current prototype requires a manually supplied Firebase ID token and
+    a same-origin backend route. Full Firebase sign-in is not implemented.
+  - The variant's desktop build remains offline-only; its cloud AI preview is
+    not connected from the Windows app.
+  - A separate encrypted-vault API prototype exists, but the frontend is not
+    connected to it. Its ciphertext limit is 512 KiB, below the local vault
+    limit, and it does not provide production-ready multi-device merging.
+  - No GCP service creation or deployment is implied by having the source.
+
+5. PLANNED PERSONAL-USE FEATURES
+
+5.1 Google Cloud access and cross-device sync
+  - Normal Firebase Authentication sign-in and secure owner authorization.
+  - Firebase Hosting frontend and Cloud Run backend for web access.
+  - Optional encrypted sync across desktop, mobile and tablet; define key
+    management, recovery, offline changes, conflicts and safe restore first.
+  - User-controlled consent, data minimization, retention and cloud deletion.
+  - Optional Google Cloud Storage for encrypted large files and backups, after
+    attachment format, integrity and access controls are implemented.
+
+5.2 AI and Google Agents
+  - Google ADK agent with limited read-only tools for verified cash-flow,
+    budgets, upcoming obligations and goals.
+  - AI explanations and draft suggestions; deterministic application code
+    remains responsible for financial arithmetic and record validation.
+  - Goal-based scenarios for a house, debt repayment, travel or another event.
+  - Optional Google and OpenAI model selection through a secured backend,
+    subject to explicit provider choice, consent, cost and retention settings.
+  - Review and approval before AI suggestions change financial records.
+  - Agent evaluation, request limits, cost monitoring and redacted diagnostics.
+
+5.3 Email, SMS and documents
+  - Optional Gmail connection using Google OAuth and the applicable permissions.
+  - Optional Android SMS/notification or share-sheet ingestion, subject to
+    Android and app-distribution rules and explicit user permission.
+  - PDF or other statement parsing where implemented and validated.
+  - Source provenance, duplicate detection and a review inbox for proposed
+    entries; avoid sending OTPs, PINs or entire inboxes to an AI model.
+  - No automatic Gmail or SMS ingestion is currently connected.
+
+5.4 Investments and expanded planning
+  - Later-stage holdings and investment transaction tracking, asset allocation
+    and goal projections when the user starts investing.
+  - Verified, appropriately licensed market prices/news if those are added.
+  - Any future personalized investment recommendations need separate legal,
+    suitability, source-quality and accuracy review; current AI is not an
+    investment adviser and does not execute trades.
+
+5.5 Mobile and operations
+  - Installable Android app or mobile web/PWA experience, with tested document
+    access, local storage, backups and accessibility.
+  - OS-level scheduled reminders that can work when the app is closed.
+  - More robust performance for large ledgers, attachment separation, secure
+    updates, dependency maintenance, threat review and recovery testing.
+
+6. PERSONAL-USE SECURITY AND DESIGN PRINCIPLES
+
+  - Personal use only: no public accounts, tester data, commercial revenue or
+    shared household access is required by this specification.
+  - Default to local storage and local calculations; cloud, email and AI are
+    optional and separately consented. Cross-device sync necessarily sends an
+    encrypted or plaintext representation to a service.
+  - Do not store banking passwords, card PINs, UPI PINs, OTPs or CVVs.
+  - Keep source transactions and settled amounts auditable; show provenance,
+    support reversals and prevent duplicate posting.
+  - Show exact period, currency, data freshness, missing values and whether an
+    amount is actual, pending or projected.
+  - An AI output is a suggestion, not proof of payment or a bank balance.
+  - Use synthetic data for cloud tests; keep personal data and secrets out of
+    repositories, screenshots, logs and public demo environments.
+  - Set a target monthly cloud/AI budget of INR 1,000; alerts, quotas and rate
+    limits require implementation and do not automatically guarantee a cap.
+
+7. PRIORITY ORDER
+
+  1. Reconcile and test financial calculations, balance confirmations,
+     statement carry-forward, reversals and legacy imports with safe fixtures.
+  2. Test independent encrypted backups and restores; protect existing data.
+  3. Improve modularity, large-ledger performance and correction UX.
+  4. Add authenticated personal cloud preview and safe encrypted sync.
+  5. Introduce limited AI/ADK insights with explicit consent and evaluation.
+  6. Add reviewed email/SMS/document ingestion and reliable reminders.
+  7. Add investments, richer goals and Android installation when needed.
+
+Related project references:
+  README.md
+  docs\legacy-gaps-status.md
+  FinanceAtlas-GCP-AI\docs\GCP-AI-VARIANT.md
