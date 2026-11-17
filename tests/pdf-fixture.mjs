@@ -1,0 +1,10 @@
+// A one-page fictional PDF encrypted with the password atlas-fixture.
+export const lockedPdf = "JVBERi0xLjMKJeLjz9MKMSAwIG9iago8PAovUHJvZHVjZXIgPGYwMDk0OGIxZTg+Cj4+CmVuZG9iagoyIDAgb2JqCjw8Ci9UeXBlIC9QYWdlcwovQ291bnQgMQovS2lkcyBbIDQgMCBSIF0KPj4KZW5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL0NhdGFsb2cKL1BhZ2VzIDIgMCBSCj4+CmVuZG9iago0IDAgb2JqCjw8Ci9UeXBlIC9QYWdlCi9SZXNvdXJjZXMgPDwKL0ZvbnQgPDwKL0YxIDUgMCBSCj4+Cj4+Ci9NZWRpYUJveCBbIDAuMCAwLjAgMzAwIDMwMCBdCi9QYXJlbnQgMiAwIFIKL0NvbnRlbnRzIDYgMCBSCj4+CmVuZG9iago1IDAgb2JqCjw8Ci9UeXBlIC9Gb250Ci9TdWJ0eXBlIC9UeXBlMQovQmFzZUZvbnQgL0hlbHZldGljYQo+PgplbmRvYmoKNiAwIG9iago8PAovTGVuZ3RoIDU2Cj4+CnN0cmVhbQqLO5OT5cdm5d4v6ZqRonUZB75PuTdqTi1RfAF2BJdbkdCln26cRzk24JYvIYym71dKztNZN5OZjAplbmRzdHJlYW0KZW5kb2JqCjcgMCBvYmoKPDwKL1YgMgovUiAzCi9MZW5ndGggMTI4Ci9QIDQyOTQ5NjcyOTIKL0ZpbHRlciAvU3RhbmRhcmQKL08gPDkxM2ExOTAwMzQ4YzIyZDVjMDI4NGQ4ZjJhMWVkNGQ2YThhMWY5MmJmNzEzNThkMTBhZTBkMWM5ODE0MWI5OWQ+Ci9VIDwxNDhjZTc1ZmU5MmU0MzU0MTZmOWNmNWYwYmJiOTU0YTI4YmY0ZTVlNGU3NThhNDE2NDAwNGU1NmZmZmEwMTA4Pgo+PgplbmRvYmoKeHJlZgowIDgKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDE1IDAwMDAwIG4gCjAwMDAwMDAwNTkgMDAwMDAgbiAKMDAwMDAwMDExOCAwMDAwMCBuIAowMDAwMDAwMTY3IDAwMDAwIG4gCjAwMDAwMDAyOTkgMDAwMDAgbiAKMDAwMDAwMDM2OSAwMDAwMCBuIAowMDAwMDAwNDc1IDAwMDAwIG4gCnRyYWlsZXIKPDwKL1NpemUgOAovUm9vdCAzIDAgUgovSW5mbyAxIDAgUgovSUQgWyA8YTQyNzI1MzQ3ZjkzOWEyNDkwZTFiNjg4MTM2MWNkODk+IDxhNDI3MjUzNDdmOTM5YTI0OTBlMWI2ODgxMzYxY2Q4OT4gXQovRW5jcnlwdCA3IDAgUgo+PgpzdGFydHhyZWYKNjkwCiUlRU9GCg==";
+export const selectLockedPdf = `(() => {
+  const pdf = Uint8Array.from(atob("${lockedPdf}"), character => character.charCodeAt(0));
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([pdf], "test-locked.pdf", {type:"application/pdf"}));
+  const input = document.querySelector("[aria-label='Add financial documents']");
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", {bubbles:true}));
+})()`;
