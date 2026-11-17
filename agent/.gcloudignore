@@ -1,0 +1,6 @@
+.gcloudignore
+.venv/
+__pycache__/
+.env*
+*.json
+test_*.py
