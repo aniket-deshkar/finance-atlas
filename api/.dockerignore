@@ -6,3 +6,5 @@
 !main.mjs
 !cloud-routes.mjs
 !cloud-store.mjs
+!assistant.mjs
+!market.mjs
