@@ -7,6 +7,8 @@ import {
   type Account, type EntryKind, type Ledger
 } from "../lib/ledger";
 import { decryptVault, deriveKey, installVault, preference, readVault, saveSnapshot, saveVault, type Envelope } from "../lib/vault";
+import { cloudConfigured, connectCloud, disconnectCloud } from "../lib/cloud";
+import { fetchSnapshot, readHead, type CloudHead } from "../lib/cloud-sync";
 import { AttentionPanel } from "./attention";
 import { Icon } from "./icons";
 import { Overview } from "./overview";
@@ -145,6 +147,8 @@ export default function Page() {
   const [desktop, setDesktop] = useState(false);
   useEffect(() => {setDesktop(isDesktop());}, []);
   const [existing, setExisting] = useState<Envelope | null | undefined>();
+  const [welcomeHead, setWelcomeHead] = useState<CloudHead | null>(null);
+  const [welcomeConnected, setWelcomeConnected] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const selectedTheme = session ? row(session.ledger.settings.appearance).theme === "dark" ? "dark" : "light" : null;
   useEffect(() => {
@@ -275,13 +279,32 @@ export default function Page() {
     return () => { live = false; };
   }, []);
 
+  async function connectWelcome() {
+    if (busyRef.current || existing !== null) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const signal = AbortSignal.timeout(125_000);
+      await connectCloud(signal);
+      setWelcomeHead(await readHead(signal));
+      setWelcomeConnected(true);
+    } catch (problem) {
+      await disconnectCloud().catch(() => {});
+      setError(describe(problem));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
   async function unlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busyRef.current || existing === undefined) return;
     const form = event.currentTarget;
     const data = new FormData(form);
     const passphrase = String(data.get("passphrase") ?? "");
-    if (!existing && (passphrase.length < 12 || passphrase !== data.get("confirm"))) {
+    if (!existing && !welcomeHead && (passphrase.length < 12 || passphrase !== data.get("confirm"))) {
       setError("Choose a passphrase of at least 12 characters and confirm it.");
       return;
     }
@@ -296,10 +319,14 @@ export default function Page() {
         setError("The vault changed in another tab. Try again.");
         return;
       }
-      const salt = existing?.salt ?? crypto.getRandomValues(new Uint8Array(16));
+      const snapshot = existing ?? (welcomeHead ? await fetchSnapshot(welcomeHead, AbortSignal.timeout(45_000)) : null);
+      const salt = snapshot?.salt ?? crypto.getRandomValues(new Uint8Array(16));
       const key = await deriveKey(passphrase, salt);
-      const ledger = validateFinance(existing ? await decryptVault(existing, key) : blank(), today());
-      const envelope = existing ?? await saveVault(ledger, key, salt, null);
+      const ledger = validateFinance(snapshot ? await decryptVault(snapshot, key) : blank(), today());
+      if (snapshot && !existing) await installVault(snapshot, null);
+      const envelope = snapshot ?? await saveVault(ledger, key, salt, null);
+      setWelcomeHead(null);
+      setWelcomeConnected(false);
       setExisting(envelope);
       setClockDay(today());
       setMonth(currentMonth(ledger, today()));
@@ -308,7 +335,7 @@ export default function Page() {
       activeSession.current = unlocked;
       setSession(unlocked);
     } catch (problem) {
-      setError(existing && problem instanceof DOMException && problem.name === "OperationError"
+      setError((existing || welcomeHead) && problem instanceof DOMException && problem.name === "OperationError"
         ? "Could not unlock the vault. Check the passphrase." : describe(problem));
     } finally {
       busyRef.current = false;
@@ -465,14 +492,19 @@ export default function Page() {
         <path d="M4 83C28 83 40 63 63 64S102 75 125 51S162 65 186 38S222 48 241 27S274 43 313 7" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /></svg></div>
       <p className="login-foot">Encrypted storage on this device</p>
     </section>
-    <section className="login-form"><p className="eyebrow">FINANCE ATLAS {desktop ? "DESKTOP" : "WEB PILOT"}</p><h2>{existing ? "Unlock your workspace" : "Create a local workspace"}</h2>
+    <section className="login-form"><p className="eyebrow">FINANCE ATLAS {desktop ? "DESKTOP" : "WEB PILOT"}</p><h2>{existing ? "Unlock your workspace" : welcomeHead ? "Unlock your cloud workspace" : welcomeConnected ? "Create your workspace" : "Create a local workspace"}</h2>
       <p className="muted">Use your vault passphrase on this device. Keep a separate backup and a copy of your passphrase.</p>
+      {cloudConfigured && existing === null && (welcomeConnected
+        ? <button type="button" disabled={busy} onClick={() => {
+          void disconnectCloud().then(() => {setWelcomeHead(null);setWelcomeConnected(false);setError("");}).catch(problem => setError(describe(problem)));
+        }}>Disconnect Google</button>
+        : <button type="button" disabled={busy} onClick={() => void connectWelcome()}>Continue with Google</button>)}
       {existing === undefined ? <p role="status">{error || "Checking local storage…"}</p> : <form onSubmit={unlock}>
-        <label>Passphrase<input name="passphrase" type="password" required minLength={existing ? 1 : 12}
-          maxLength={128} autoComplete={existing ? "current-password" : "new-password"} /></label>
-        {!existing && <label>Confirm passphrase<input name="confirm" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>}
+        <label>Passphrase<input name="passphrase" type="password" required minLength={existing || welcomeHead ? 1 : 12}
+          maxLength={128} autoComplete={existing || welcomeHead ? "current-password" : "new-password"} /></label>
+        {!existing && !welcomeHead && <label>Confirm passphrase<input name="confirm" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>}
         {error && <p className="error" role="alert">{error}</p>}
-        <button className="primary" disabled={busy}>{busy ? "Working…" : existing ? "Unlock workspace" : "Create workspace"}</button>
+        <button className="primary" disabled={busy}>{busy ? "Working…" : existing || welcomeHead ? "Unlock workspace" : "Create workspace"}</button>
       </form>}
     </section>
   </main>;

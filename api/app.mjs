@@ -41,7 +41,9 @@ export async function createApi({ ownerUid, verifyToken, storage, cloud, assista
     }
   });
   if (cloud || assistant) app.options("/v1/*", async (_request, reply) => reply.code(403).send());
-  app.get("/healthz", async () => ({status: "ok"}));
+  const health = async () => ({status: "ok"});
+  app.get("/health", health);
+  app.get("/healthz", health);
 
   async function owner(request, reply) {
     const match = /^Bearer ([A-Za-z0-9_.-]{20,8192})$/.exec(request.headers.authorization ?? "");
@@ -49,10 +51,14 @@ export async function createApi({ ownerUid, verifyToken, storage, cloud, assista
     let identity;
     try { identity = await verifyToken(match[1]); }
     catch { return reply.code(401).send({error: "Sign in again to access the vault."}); }
+    if (ownerUid === "unassigned") {
+      return reply.code(403).send({code: "owner_not_configured", error: "Vault access is restricted."});
+    }
     if (identity?.uid !== ownerUid) return reply.code(403).send({error: "Vault access is restricted."});
   }
 
   if (assistant) registerAssistant(app, owner, assistant);
+  else app.get("/v1/ai/models", {onRequest: owner}, async () => ({enabled: false, models: [], research: false}));
   if (market) registerMarket(app, owner, market);
   if (cloud) registerCloudRoutes(app, owner, cloud);
   else {

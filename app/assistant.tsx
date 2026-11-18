@@ -1,6 +1,6 @@
-import {useEffect, useRef, useState, type ReactNode} from "react";
+import {useEffect, useEffectEvent, useRef, useState, type ReactNode} from "react";
 import {assistantFact, localAnswer, usd, type Fact, type Model, type Turn, type Usage} from "../lib/assistant";
-import {checkedJson, cloudConfigured, cloudFetch, json} from "../lib/cloud";
+import {checkedJson, cloudConfigured, cloudFetch, json, watchCloudConnection} from "../lib/cloud";
 import {field, row} from "../lib/ledger";
 import {viewIds, views, type View} from "../lib/navigation";
 import {deviceRecord} from "../lib/vault";
@@ -10,26 +10,19 @@ import type {Staged} from "../lib/files";
 import type {FeatureProps} from "./feature-ui";
 import {Icon} from "./icons";
 
-type Catalog = {models: Model[]; maxOutput: number; research: boolean};
+type Catalog = {enabled?: boolean; models: Model[]; maxOutput?: number; research: boolean};
 type Result = {answer: string; references: string[]; usage?: Usage};
 type Source = {view: View; id?: string};
 type AttachedDocument = ExtractedDocument & {staged?: Staged[]};
 const label = (view: View) => view === "Overview" ? "Dashboard" : view;
 const sourceViews = views.filter(view => !["Assistant", "Data & settings", "Documents", "Receipts", "Cashback", "Reconciliation"].includes(view));
-const unavailable = [
-  {id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite"},
-  {id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen"},
-  {id: "gemini-4-carbon", label: "Gemini 4 Carbon"},
-  {id: "gpt-6.1-terra", label: "GPT-6.1 Terra"}
-];
 
 function ModelPicker({catalog, id, reasoning, select, reason}: {catalog: Catalog | null; id: string; reasoning: string;
   select: (id: string) => void; reason: (level: string) => void}) {
   const current = catalog?.models.find(model => model.id === id && model.enabled);
   return <div className="filter-row"><label>Model<select value={current ? id : "local"} onChange={event => select(event.target.value)}>
     <option value="local">On-device figures</option>
-    {(catalog?.models ?? unavailable).map(model => <option key={model.id} value={model.id} disabled={!("enabled" in model && model.enabled)}>
-      {model.label}{!("enabled" in model && model.enabled) ? " · unavailable" : ""}</option>)}</select></label>
+    {catalog?.models.filter(model => model.enabled).map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
     {current && <label>Reasoning<select value={current.levels.includes(reasoning) ? reasoning : current.fallback}
       onChange={event => reason(event.target.value)}>{current.levels.map(level => <option key={level}>{level}</option>)}</select></label>}
   </div>;
@@ -47,20 +40,37 @@ export function AssistantSettings({ledger, save, busy, cloudControls}: FeaturePr
   function setDefault(key: string, value: string) {
     void save(s => ({...s, settings: {...s.settings, assistantPreferences: {...row(s.settings.assistantPreferences), [key]: value}}}));
   }
-  async function refresh() {
+  async function refresh(signal?: AbortSignal) {
     setMessage("");
     try {
-      const [models, runs] = await Promise.all([readCatalog(), cloudFetch("/v1/ai/usage").then(checkedJson<NonNullable<typeof usage>>)]);
-      setCatalog(models);setUsage(runs);
-    } catch (error) {setMessage(error instanceof Error ? error.message : "Cloud AI is unavailable.");}
+      const models = await readCatalog(signal);
+      signal?.throwIfAborted();
+      setCatalog(models);
+      if (models.enabled === false) {
+        setUsage(null);
+        return;
+      }
+      setUsage(await cloudFetch("/v1/ai/usage", {signal}).then(checkedJson<NonNullable<typeof usage>>));
+    } catch (error) {if (!signal?.aborted) setMessage(error instanceof Error ? error.message : "Cloud AI is unavailable.");}
   }
-  return <div className="stack">{cloudControls}<section className="panel stack"><h2>AI & providers</h2>
+  const load = useEffectEvent(refresh);
+  useEffect(() => {
+    let request: AbortController | undefined;
+    const unsubscribe = watchCloudConnection(connected => {
+      request?.abort();
+      if (!connected) {setCatalog(null);setUsage(null);setMessage("");return;}
+      request = new AbortController();
+      void load(request.signal);
+    });
+    return () => {unsubscribe();request?.abort();};
+  }, []);
+  return <div className="stack atlas-ai-settings">{cloudControls}<section className="panel stack"><h2>AI & providers</h2>
     <p className="muted">{cloudConfigured ? "Connect to Google Cloud, then refresh the enabled models and usage." :
       "On-device figures are available in Assistant. Cloud models require a configured Finance Atlas deployment."}</p>
+    {catalog?.enabled === false && <p role="status">Cloud AI is disabled on this deployment. On-device figures are available.</p>}
     <fieldset disabled={busy}><ModelPicker catalog={catalog} id={id} reasoning={field(defaults,"reasoning")}
       select={value => setDefault("model",value)} reason={value => setDefault("reasoning",value)} /></fieldset>
-    {catalog?.models.map(model => <p key={model.id} className="muted">{model.label} · {model.provider} · {model.enabled ?
-      model.location + " · $" + model.input + " / $" + model.output + " per million input / output tokens" : model.unavailable}</p>)}
+    {catalog?.models.filter(model => model.enabled).map(model => <p key={model.id} className="muted">{model.label} · {model.provider} · {model.location} · ${model.input} / ${model.output} per million input / output tokens</p>)}
     <p className="muted">The backend controls which models and provider destinations are enabled. Direct OpenAI is disabled.</p>
     {cloudConfigured && <button onClick={() => void refresh()}>Refresh models and AI usage</button>}
     {message && <p role="status">{message}</p>}
@@ -93,6 +103,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   const [message, setMessage] = useState("");
   const controller = useRef<AbortController | null>(null);
   const fab = useRef<HTMLButtonElement>(null);
+  const drawer = useRef<HTMLElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const alive = useRef(true);
   const displayed = full || floating;
@@ -106,8 +117,11 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   useEffect(() => {
     if (!displayed || !cloudConfigured) return;
     const read = new AbortController();
-    void readCatalog(read.signal).then(setCatalog).catch(() => {});
-    return () => read.abort();
+    const unsubscribe = watchCloudConnection(connected => {
+      if (connected) void readCatalog(read.signal).then(result => {if (!read.signal.aborted) setCatalog(result);}).catch(() => {});
+      else setCatalog(null);
+    });
+    return () => {unsubscribe();read.abort();};
   }, [displayed]);
   useEffect(() => {
     if (!floating || full) return;
@@ -115,8 +129,13 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") {setFloating(false);fab.current?.focus();}
     };
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !drawer.current?.contains(target) && !fab.current?.contains(target)) setFloating(false);
+    };
     document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
+    document.addEventListener("pointerdown", closeOutside);
+    return () => {document.removeEventListener("keydown", close);document.removeEventListener("pointerdown", closeOutside);};
   }, [floating, full]);
 
   const defaults = row(ledger.settings.assistantPreferences);
@@ -163,6 +182,11 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
     setSources(values => [item, ...values.filter(x => x.view !== item.view)].slice(0, 6));
     setApproval("");
   };
+  const starters: {text: string; view: View}[] = [
+    {text: "How much have I saved?", view: "Overview"},
+    {text: "What payments are coming up?", view: "Payment calendar"},
+    {text: "Am I within my budget?", view: "Monthly budget"},
+  ];
   function openFloating() {
     if (!floating) {
       if (assistantFact(ledger, view, viewIds[view], month, asOf, target)) attach({view,id:target});
@@ -173,7 +197,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   return <>
     {!full && <button ref={fab} className="atlas-assistant-fab" aria-label={floating ? "Close Assistant" : "Open Assistant"} aria-expanded={floating}
       onClick={openFloating}><Icon name="chat" /></button>}
-    {displayed && <section role={full ? undefined : "dialog"} aria-label="Finance Atlas Assistant"
+    {displayed && <section ref={drawer} role={full ? undefined : "dialog"} aria-label="Finance Atlas Assistant"
       className={"panel stack atlas-chat " + (full ? "atlas-content-enter" : "atlas-chat-drawer")}>
       <header className="panel-head"><h2>{full ? "Conversation" : "Assistant"}</h2><div className="button-row">
         {!full && <button onClick={() => {navigate("Assistant");setFloating(false);}}>Open full Assistant</button>}
@@ -185,7 +209,14 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
       </div></header>
       {privacy ? <p>Show amounts to open your conversation and send questions.</p> : <>
       <div className="atlas-chat-history" role="log" aria-label="Conversation">
-        {!turns.length && <p className="muted">Attach a page and ask about savings, upcoming bills, tax estimates, or investments.</p>}
+        {!turns.length && <div className="atlas-chat-intro">
+          <Icon name="chat" />
+          <h3>What would you like to review?</h3>
+          <p className="muted">Choose a question to attach the relevant figures, or write your own.</p>
+          <div className="button-row">{starters.map(item => <button type="button" key={item.text} onClick={() => {
+            attach({view: item.view});setQuestion(item.text);composer.current?.focus();
+          }}>{item.text}</button>)}</div>
+        </div>}
         {turns.map((turn,i) => <article className="atlas-message" data-role={turn.role} key={i}>
           <small>{turn.role === "user" ? "You" : "Assistant"}</small><p>{turn.text}</p>
           {turn.sources?.map(source => <button key={source.ref} onClick={() => {navigate(source.view,source.id);setFloating(false);}}>{source.label}</button>)}

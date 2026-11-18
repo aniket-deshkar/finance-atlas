@@ -1,5 +1,5 @@
 import {initializeApp} from "firebase/app";
-import {browserPopupRedirectResolver, GoogleAuthProvider, inMemoryPersistence, initializeAuth, signInWithCustomToken, signInWithPopup, signOut, type Auth} from "firebase/auth";
+import {browserPopupRedirectResolver, GoogleAuthProvider, inMemoryPersistence, initializeAuth, onAuthStateChanged, signInWithCustomToken, signInWithPopup, signOut, type Auth} from "firebase/auth";
 import {desktopInvoke, isDesktop} from "./desktop";
 import {base64} from "./files";
 
@@ -55,6 +55,10 @@ export async function disconnectCloud() {
 
 export const cloudConnected = () => Boolean(auth?.currentUser);
 
+export function watchCloudConnection(listener: (connected: boolean) => void) {
+  return cloudConfigured ? onAuthStateChanged(getCloudAuth(), user => listener(Boolean(user))) : () => {};
+}
+
 export function json(body: unknown, signal?: AbortSignal): RequestInit {
   return {method: "POST", signal, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
 }
@@ -73,8 +77,11 @@ export async function cloudFetch(path: string, init: RequestInit = {}, authorize
 
 export async function checkedJson<T = unknown>(response: Response): Promise<T> {
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw Error("Cloud access denied. Sign in with the configured owner account.");
     const data = await response.json().catch(() => null);
+    if (response.status === 403 && data?.code === "owner_not_configured") {
+      throw Error("Google sign-in succeeded. Copy your User UID from Firebase Authentication → Users, set ATLAS_OWNER_UID on the Finance Atlas API, then connect again.");
+    }
+    if (response.status === 401 || response.status === 403) throw Error("Cloud access denied. Sign in with the configured owner account.");
     throw Error(typeof data?.error === "string" ? data.error : "Finance Atlas Cloud is unavailable.");
   }
   return response.json() as Promise<T>;

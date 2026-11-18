@@ -2,7 +2,7 @@
 import {useEffect, useEffectEvent, useMemo, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import {analysisContext, currentAttention, reviewProposals, updateReview, type AgentResult, type AttentionItem} from "../lib/attention";
-import {checkedJson, cloudConfigured, cloudFetch, connectCloud, disconnectCloud, json} from "../lib/cloud";
+import {checkedJson, cloudConfigured, cloudConnected, cloudFetch, connectCloud, disconnectCloud, json} from "../lib/cloud";
 import {fetchSnapshot, publishSnapshot, readHead, type CloudHead} from "../lib/cloud-sync";
 import {download} from "../lib/files";
 import {money, rows, type Ledger} from "../lib/ledger";
@@ -20,7 +20,7 @@ const syncPref = "cloud-sync-base:" + process.env.NEXT_PUBLIC_ATLAS_FIREBASE_PRO
 const message = (problem: unknown) => problem instanceof Error ? problem.message : typeof problem === "string" ? problem : "The operation could not be completed.";
 
 export function AttentionPanel({ledger, month, asOf, busy, save, visible, privacy, envelope, navigate, restore, reissue, cloudMount}: Props) {
-  const [connected, setConnected] = useState(false), [working, setWorking] = useState(false), [syncEnabled, setSyncEnabled] = useState(false);
+  const [connected, setConnected] = useState(cloudConnected), [working, setWorking] = useState(false), [syncEnabled, setSyncEnabled] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null), [notice, setNotice] = useState(""), [error, setError] = useState("");
   const [review, setReview] = useState(false), [approved, setApproved] = useState("");
   const [reports, setReports] = useState<string[]>([]);
@@ -103,6 +103,17 @@ export function AttentionPanel({ledger, month, asOf, busy, save, visible, privac
     const timeout = setTimeout(() => autoSync(), 1250);
     return () => clearTimeout(timeout);
   }, [localRevision, connected, syncEnabled, busy, working, conflict]);
+
+  const refreshOnFocus = useEffectEvent(() => {
+    if (!connected || !syncEnabled || busy || working || conflict || operation.current) return;
+    void run(signal => sync(envelope, signal));
+  });
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") refreshOnFocus(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {window.removeEventListener("focus", refresh);document.removeEventListener("visibilitychange", refresh);};
+  }, []);
 
   async function resolveConflict(passphrase: string, useRemote: boolean, signal: AbortSignal) {
     if (!conflict || conflict.localRevision !== envelope.revision) {
