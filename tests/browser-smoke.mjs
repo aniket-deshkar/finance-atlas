@@ -13,7 +13,7 @@ const scratch = mkdtempSync(resolve(tmpdir(), "atlas-next-smoke-"));
 const config = JSON.parse(readFileSync(new URL("../firebase.json", import.meta.url), "utf8"));
 const hostingHeaders = Object.fromEntries(config.hosting.headers[0].headers.map(header => [header.key, header.value]));
 let browser, socket;
-const mime = { html: "text/html; charset=utf-8", js: "application/javascript", mjs: "application/javascript", css: "text/css", json: "application/json" };
+const mime = { html: "text/html; charset=utf-8", js: "application/javascript", mjs: "application/javascript", css: "text/css", json: "application/json", ico: "image/x-icon" };
 const server = createServer((request, response) => {
   const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
   let file = resolve(out, "." + pathname);
@@ -31,6 +31,7 @@ async function main() {
   assert.ok(existsSync(resolve(out, "index.html")), "Run npm run build first.");
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = "http://127.0.0.1:" + server.address().port;
+  assert.equal((await fetch(origin + "/favicon.ico")).status, 200, "The app icon is included in the static export");
   browser = spawn(chrome, ["--headless=new", "--disable-extensions", "--disable-background-networking",
     "--no-first-run", "--remote-debugging-port=0", "--user-data-dir=" + scratch, "about:blank"],
     {windowsHide: true, stdio: ["ignore", "ignore", "pipe"]});
