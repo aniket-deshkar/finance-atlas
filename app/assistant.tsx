@@ -199,7 +199,8 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
       onClick={openFloating}><Icon name="chat" /></button>}
     {displayed && <section ref={drawer} role={full ? undefined : "dialog"} aria-label="Finance Atlas Assistant"
       className={"panel stack atlas-chat " + (full ? "atlas-content-enter" : "atlas-chat-drawer")}>
-      <header className="panel-head"><h2>{full ? "Conversation" : "Assistant"}</h2><div className="button-row">
+      <header className="panel-head"><div className="atlas-chat-heading"><span className="atlas-chat-kicker">YOUR FINANCIAL COPILOT</span><h2>{full ? "Ask Finance Atlas" : "Assistant"}</h2>
+        <p>Review the figures you choose. Cloud questions always ask for your approval.</p></div><div className="button-row">
         {!full && <button onClick={() => {navigate("Assistant");setFloating(false);}}>Open full Assistant</button>}
         {!full && <button onClick={() => {setFloating(false);fab.current?.focus();}}>Close</button>}
         {turns.length > 0 && <button disabled={loading} onClick={async () => {

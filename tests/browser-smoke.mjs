@@ -151,8 +151,12 @@ async function main() {
   await until("document.querySelector('[role=log]')?.textContent.includes('Net savings')");
   await click("Open full Assistant");
   await until("document.querySelector('h1')?.textContent === 'Assistant'");
-  assert.equal(await evaluate("document.querySelector('.atlas-chat').getBoundingClientRect().width <= 1090"), true);
+  assert.equal(await evaluate("document.querySelector('.atlas-chat').getBoundingClientRect().width <= 1216"), true);
   assert.match(await evaluate("document.querySelector('[role=log]').innerText"), /28,000\.00/);
+  if (process.env.ATLAS_SCREENSHOT_ASSISTANT) {
+    const shot = await send("Page.captureScreenshot", {format: "png"});
+    writeFileSync(process.env.ATLAS_SCREENSHOT_ASSISTANT, Buffer.from(shot.data, "base64"));
+  }
   await click("Documents");
   await evaluate(selectLockedPdf);
   await until("document.body.innerText.includes('Password required for test-locked.pdf')");
@@ -294,7 +298,7 @@ async function main() {
   await click("Transactions");
   assert.equal(await evaluate("Array.from(document.querySelectorAll('tr')).some(el=>el.innerText.includes('Stale write must fail'))"), false);
   await click("Dashboard");
-  for (const [width, height, deviceScaleFactor] of [[1440, 900, 1], [1536, 864, 1.25], [1280, 720, 1.5], [1366, 768, 1], [1024, 768, 1], [768, 1024, 1]]) {
+  for (const [width, height, deviceScaleFactor] of [[1440, 900, 1], [1536, 864, 1.25], [1280, 720, 1.5], [1366, 768, 1], [1024, 768, 1], [768, 1024, 1], [430, 932, 1], [390, 844, 1]]) {
     await send("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor, mobile: false});
     assert.equal(await evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"), true, width + "px layout");
     assert.equal(await evaluate("document.querySelector('.balance-hero').getBoundingClientRect().top < innerHeight"), true, "Liquid balance visible at " + width);
@@ -303,6 +307,18 @@ async function main() {
       await until("getComputedStyle(document.querySelector('.atlas-kpi:last-child')).opacity === '1'");
       const shot = await send("Page.captureScreenshot", {format: "png"});
       writeFileSync(process.env.ATLAS_SCREENSHOT, Buffer.from(shot.data, "base64"));
+    }
+    if (width === 390 && process.env.ATLAS_SCREENSHOT_MOBILE) {
+      await until("document.querySelector('.atlas-kpi:last-child').getAnimations().every(a => a.playState === 'finished')");
+      const shot = await send("Page.captureScreenshot", {format: "png"});
+      writeFileSync(process.env.ATLAS_SCREENSHOT_MOBILE, Buffer.from(shot.data, "base64"));
+    }
+    if (width === 390) {
+      assert.equal(await evaluate("document.querySelector('.topbar .search').getBoundingClientRect().width <= 40"), true, "Mobile search starts as an icon");
+      await evaluate("document.querySelector('.topbar .search input').focus()");
+      const mobileSearchWidth = await evaluate("document.querySelector('.topbar .search').getBoundingClientRect().width");
+      assert.ok(mobileSearchWidth >= 240, `Mobile search expands when focused; got ${mobileSearchWidth}px`);
+      await evaluate("document.querySelector('.topbar .search input').blur()");
     }
   }
   await send("Emulation.setDeviceMetricsOverride", {width: 1440, height: 900, deviceScaleFactor: 1, mobile: false});

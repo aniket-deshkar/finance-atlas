@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Finance Atlas",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "identifier": "app.financeatlas.desktop",
   "build": {
     "frontendDist": "../out",
