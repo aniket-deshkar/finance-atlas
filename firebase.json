@@ -5,7 +5,7 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [
       {"source": "/v1/**", "run": {"serviceId": "finance-atlas-api", "region": "asia-south1"}},
-      {"source": "/healthz", "run": {"serviceId": "finance-atlas-api", "region": "asia-south1"}}
+      {"source": "/health", "run": {"serviceId": "finance-atlas-api", "region": "asia-south1"}}
     ],
     "headers": [
       {

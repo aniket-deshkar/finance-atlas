@@ -215,6 +215,7 @@ export function AutomationSettings({ledger, save, busy}: FeatureProps) {
   const [type, setType] = useState("expense");
   const categories = type === "income" ? ledger.categories.income : ledger.categories.expense;
   return <section className="panel stack"><h2>Statement automation</h2>
+    <details><summary>Email and SMS import status</summary><p className="muted">Inbox scanning is not connected. Finance Atlas does not read messages or create entries from them in the background. You can import a statement in Documents or review a pasted alert when adding a transaction. Each additional Gmail account would need its own consent and a review step before posting entries.</p></details>
     <label>Bank account<select value={account} onChange={event => setAccount(event.target.value)}><option value="">Choose account</option>
       {ledger.accounts.filter(item => item.type === "bank").map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     {account && <>

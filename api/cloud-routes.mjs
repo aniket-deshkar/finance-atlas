@@ -96,7 +96,8 @@ export function registerCloudRoutes(app, owner, {sync, pairing, analyze, reserve
     if (!await reserveAnalysis()) return reply.code(429).send({error: "The five-analysis daily limit has been reached."});
     try {
       return {results: filterAnalysis(await analyze(request.body), request.body)};
-    } catch {
+    } catch (error) {
+      if (error?.code === "ATLAS_AI_LIMIT") return reply.code(429).send({error: "The monthly AI budget limit has been reached."});
       return reply.code(502).send({error: "The AI service could not complete this request."});
     }
   });
