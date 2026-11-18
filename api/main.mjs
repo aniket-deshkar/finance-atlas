@@ -3,6 +3,7 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { Storage } from "@google-cloud/storage";
 import { GoogleAuth } from "google-auth-library";
+import { randomUUID } from "node:crypto";
 import { createApi, resolveUpdate } from "./app.mjs";
 import { createCloud } from "./cloud-store.mjs";
 import { assistantCatalog, createUsage } from "./assistant.mjs";
@@ -36,23 +37,35 @@ const worker = process.env.ATLAS_AGENT_URL;
 if (worker && !/^https:\/\/[a-z0-9-]+\.[a-z0-9.-]*run\.app$|^https:\/\/[a-z0-9-]+\.run\.app$/.test(worker))
   throw Error("Set ATLAS_AGENT_URL to the HTTPS Cloud Run service origin.");
 const client = worker ? await new GoogleAuth().getIdTokenClient(worker) : null;
+const catalog = assistantCatalog(JSON.parse(process.env.ATLAS_CHAT_MODELS || "{}"));
+const maxSpend = Number(process.env.ATLAS_AI_MONTHLY_USD_MICROS || "5000000");
+if (!Number.isSafeInteger(maxSpend) || maxSpend < 0) throw Error("Invalid AI monthly budget.");
+const usage = createUsage(db, ownerUid, maxSpend);
+const cloudAi = process.env.ATLAS_ENABLE_AI === "true" && client;
+const analysisModel = catalog.find(model => model.enabled && model.id === process.env.ATLAS_ANALYSIS_MODEL);
 const cloud = process.env.ATLAS_SYNC_BUCKET ? createCloud({
   db, ownerUid, bucket: new Storage({projectId}).bucket(process.env.ATLAS_SYNC_BUCKET),
   mintToken: () => auth.createCustomToken(ownerUid),
-  analyze: process.env.ATLAS_ENABLE_AI === "true" && client ? async summary => {
-    const response = await client.request({url: worker + "/analyze", method: "POST", data: summary, timeout: 55_000, retry: false});
-    return response.data;
+  analyze: cloudAi && analysisModel ? async summary => {
+    const estimate = Math.ceil((Buffer.byteLength(JSON.stringify(summary)) + 4000) * 2 * analysisModel.input + 1500 * analysisModel.output);
+    const run = {id: randomUUID(), model: analysisModel.id, reasoning: "Worker default", estimate, kind: "analysis"};
+    const month = await usage.reserve(run);
+    if (!month) throw Object.assign(Error("AI budget limit reached."), {code: "ATLAS_AI_LIMIT"});
+    let status = "failed";
+    try {
+      const response = await client.request({url: worker + "/analyze", method: "POST", data: summary, timeout: 48_000, retry: false});
+      status = "complete";
+      return response.data;
+    } finally {
+      await usage.finish(run, month, {status, cost: null});
+    }
   } : null
 }) : undefined;
-const modelConfig = JSON.parse(process.env.ATLAS_CHAT_MODELS || "{}");
-const catalog = assistantCatalog(modelConfig);
-const maxSpend = Number(process.env.ATLAS_AI_MONTHLY_USD_MICROS || "5000000");
-if (!Number.isSafeInteger(maxSpend) || maxSpend < 0) throw Error("Invalid AI monthly budget.");
 const invokeWorker = path => async input => (await client.request({
   url: worker + path, data: input, method: "POST", timeout: 48_000, retry: false
 })).data;
-const assistant = process.env.ATLAS_ENABLE_AI === "true" && client ? {
-  catalog, usage: createUsage(db, ownerUid, maxSpend), invoke: invokeWorker("/chat"),
+const assistant = cloudAi ? {
+  catalog, usage, invoke: invokeWorker("/chat"),
   research: process.env.ATLAS_POLICY_MODEL ? {model: process.env.ATLAS_POLICY_MODEL, invoke: invokeWorker("/policy")} : undefined
 } : undefined;
 const market = cloud ? {dhanToken: process.env.ATLAS_DHAN_DATA_TOKEN} : undefined;

@@ -112,32 +112,37 @@ fn open_public_source(address: String) -> Result<(), String> {
 }
 
 pub fn run() {
+    let test_profile = if cfg!(debug_assertions) { std::env::var_os("ATLAS_DESKTOP_TEST_PROFILE") } else { None };
+    let mut context = tauri::generate_context!();
+    if test_profile.is_some() {
+        context.config_mut().identifier.push_str(".smoke-test");
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") { let _ = window.unminimize(); let _ = window.set_focus(); }
         }))
         .manage(BackupFolder::default())
         .invoke_handler(tauri::generate_handler![export_file, backup_folder, choose_backup_folder, write_encrypted_backup, set_native_theme, open_public_source, cloud_auth::desktop_pair])
-        .setup(|app| {
-            let config_dir = app.path().app_config_dir()?;
-            if let Ok(bytes) = fs::read(config_dir.join("backup-folder.json")) {
-                if let Ok(path) = serde_json::from_slice::<PathBuf>(&bytes) {
-                    *app.state::<BackupFolder>().0.lock().map_err(|_| "Backup settings are busy")? = Some(path);
+        .setup(move |app| {
+            if test_profile.is_none() {
+                let config_dir = app.path().app_config_dir()?;
+                if let Ok(bytes) = fs::read(config_dir.join("backup-folder.json")) {
+                    if let Ok(path) = serde_json::from_slice::<PathBuf>(&bytes) {
+                        *app.state::<BackupFolder>().0.lock().map_err(|_| "Backup settings are busy")? = Some(path);
+                    }
                 }
             }
             let config = &app.config().app.windows[0];
             let mut builder = tauri::WebviewWindowBuilder::from_config(app, config)?;
             let profile = app.path().app_local_data_dir()?.join("webview");
             // Native integration checks use a separate profile and never access a real vault.
-            let profile = if cfg!(debug_assertions) {
-                if let Some(test) = std::env::var_os("ATLAS_DESKTOP_TEST_PROFILE") {
-                    let path = fs::canonicalize(PathBuf::from(test))?;
-                    let temporary = fs::canonicalize(std::env::temp_dir())?;
-                    if !path.starts_with(temporary) || !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("finance-atlas-desktop-test-")) {
-                        return Err("Desktop test profile must be an isolated temporary directory".into());
-                    }
-                    path
-                } else { profile }
+            let profile = if let Some(test) = test_profile.as_ref() {
+                let path = fs::canonicalize(PathBuf::from(test))?;
+                let temporary = fs::canonicalize(std::env::temp_dir())?;
+                if !path.starts_with(temporary) || !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("finance-atlas-desktop-test-")) {
+                    return Err("Desktop test profile must be an isolated temporary directory".into());
+                }
+                path
             } else { profile };
             fs::create_dir_all(&profile)?;
             builder = builder.data_directory(profile);
@@ -152,7 +157,7 @@ pub fn run() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("Finance Atlas could not start");
 }
 

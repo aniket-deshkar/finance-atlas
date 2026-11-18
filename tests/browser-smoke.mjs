@@ -64,7 +64,14 @@ async function main() {
   function send(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++sequence;
-      pending.set(id, {resolve, reject});
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(Error("Chrome did not respond to " + method));
+      }, 12000);
+      pending.set(id, {
+        resolve: result => {clearTimeout(timeout);resolve(result);},
+        reject: error => {clearTimeout(timeout);reject(error);}
+      });
       socket.send(JSON.stringify({id, method, params}));
     });
   }
@@ -135,11 +142,16 @@ async function main() {
   await click("Dashboard");
   await click("Open Assistant");
   await until("document.querySelector('[role=dialog]')?.innerText.includes('Dashboard')");
+  await evaluate("document.querySelector('main').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))");
+  await until("!document.querySelector('[role=dialog]')");
+  await click("Open Assistant");
+  await until("!!document.querySelector('[role=dialog]')");
   await evaluate(`(() => {const input=document.querySelector('.atlas-chat textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'What are my savings?');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await click("Send question");
   await until("document.querySelector('[role=log]')?.textContent.includes('Net savings')");
   await click("Open full Assistant");
   await until("document.querySelector('h1')?.textContent === 'Assistant'");
+  assert.equal(await evaluate("document.querySelector('.atlas-chat').getBoundingClientRect().width <= 1090"), true);
   assert.match(await evaluate("document.querySelector('[role=log]').innerText"), /28,000\.00/);
   await click("Documents");
   await evaluate(selectLockedPdf);

@@ -80,7 +80,7 @@ export function createUsage(db, uid, monthlyLimit) {
 }
 
 export function registerAssistant(app, owner, {catalog, usage, invoke, research}) {
-  app.get("/v1/ai/models", {onRequest: owner}, async () => ({models: catalog, maxOutput: maximum, research: Boolean(research)}));
+  app.get("/v1/ai/models", {onRequest: owner}, async () => ({enabled: true, models: catalog, maxOutput: maximum, research: Boolean(research)}));
   app.get("/v1/ai/usage", {onRequest: owner}, async () => usage.read());
   app.post("/v1/ai/chat", {onRequest: owner, bodyLimit: 18_000}, async (request, reply) => {
     const input = validateChat(request.body, catalog);

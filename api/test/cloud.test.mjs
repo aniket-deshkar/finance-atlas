@@ -41,6 +41,29 @@ async function fixture(t, analyze) {
   return app;
 }
 
+test("owner setup denies vault access even if a token's UID matches the placeholder", async t => {
+  const app = await createApi({
+    ownerUid: "unassigned",
+    verifyToken: async () => ({uid: "unassigned"}),
+    storage: {read: async () => {throw Error("Owner setup must not read the vault");}},
+    rateLimitEnabled: false,
+  });
+  t.after(() => app.close());
+
+  assert.equal((await app.inject({url: "/v1/vault"})).statusCode, 401);
+  const response = await app.inject({url: "/v1/vault", headers: owner});
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().code, "owner_not_configured");
+});
+
+test("a sync-only deployment reports disabled AI to the owner", async t => {
+  const app = await fixture(t);
+  const models = headers => app.inject({url: "/v1/ai/models", headers});
+  assert.equal((await models({})).statusCode, 401);
+  assert.equal((await models(other)).statusCode, 403);
+  assert.deepEqual((await models(owner)).json(), {enabled: false, models: [], research: false});
+});
+
 test("binary snapshot sync protects the owner boundary and rejects a stale device", async t => {
   const app = await fixture(t);
   const bytes = Buffer.alloc(1_000_000, 8);

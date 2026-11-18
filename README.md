@@ -78,14 +78,7 @@ current walkthrough for private sync, desktop pairing, and multi-agent analysis.
 Builds without cloud settings continue to show locally calculated items under
 **Needs your attention**.
 
-### Earlier preview
-
-The static frontend export is ready for a Firebase Hosting preview with fictional records. Next.js App Router supplies the build pipeline. Later server rendering can use a server-capable Next.js deployment on Cloud Run.
-
-1. Select a Firebase-enabled Google Cloud project and verify its billing account and trial expiry.
-2. Sign in locally with `npx firebase-tools@15.35.0 login`, then check `npx firebase-tools@15.35.0 projects:list`.
-3. Build and run `npx firebase-tools@15.35.0 hosting:channel:deploy pilot --project PROJECT_ID --expires 7d` to publish `out/` as a preview.
-4. Before enabling sync, configure owner authentication, the intended Firestore region and the dedicated Cloud Run service identity. The included Firestore rules deny direct client access.
-5. Resolve the API's Firebase Admin transitive dependency advisories before backend deployment. Configure `ATLAS_FIREBASE_PROJECT` and `ATLAS_OWNER_UID`, verify owner access, restore and conflicts with synthetic data, then connect the client.
-
-The separate `api/` service exposes health and authenticated encrypted-vault GET/PUT endpoints with revision conflicts and idempotent retry. Its snapshot pilot accepts up to 512 KiB of ciphertext, so larger vaults and receipts need a chunked/object-storage design before enabling full sync. Run `npm.cmd ci` and `npm.cmd test` inside that directory to check it against its test store. The web UI uses its local vault. Cloud identity, multi-device sync, Gmail/SMS ingestion and AI provider integration are separate deployment work.
+The Next.js static export is served by Firebase Hosting. The `api/` service
+verifies the owner's Firebase identity and manages encrypted snapshot revisions.
+The private `agent/` service handles cloud AI. Run `npm.cmd ci` and `npm.cmd test`
+inside `api/` to test the API against its local test store.
