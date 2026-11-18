@@ -9,7 +9,8 @@ const env = {...process.env, NEXT_TELEMETRY_DISABLED: "1"};
 if (existsSync(resolve(isolated, "cargo/bin/cargo.exe"))) {
   env.CARGO_HOME = resolve(isolated, "cargo");
   env.RUSTUP_HOME = resolve(isolated, "rustup");
-  env.PATH = resolve(isolated, "cargo/bin") + delimiter + env.PATH;
+  const pathKey = Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH";
+  env[pathKey] = resolve(isolated, "cargo/bin") + delimiter + (env[pathKey] ?? "");
 }
 const action = process.argv[2];
 if (action === "open") {
