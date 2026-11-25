@@ -2,8 +2,9 @@
 import type {ReactNode} from "react";
 
 import { useState } from "react";
-import { balance, displayPeriod, field, hasReversal, kinds, latestStatement, minor, money as formatMoney, monthLabel, monthShift, reportPeriod, rows, statementAmounts, totals, type Ledger } from "../lib/ledger";
-import { budgetLimit, cashMetrics, cardBills, cardUsage, loans, personal, postedRows, schedule, sum } from "../lib/finance";
+import { balance, dayShift, displayPeriod, field, hasReversal, kinds, latestStatement, minor, money as formatMoney, monthLabel, monthShift, reportPeriod, rows, statementAmounts, totals, type Ledger } from "../lib/ledger";
+import { budgetLimit, cashMetrics, cardBills, cardUsage, loans, netPosition, personal, postedRows, schedule, sum } from "../lib/finance";
+import {portfolio} from "../lib/assets";
 import { widgetVisible, type View } from "../lib/navigation";
 import { Icon, type IconName } from "./icons";
 import { dateText } from "./feature-ui";
@@ -18,10 +19,21 @@ export function Overview({ledger, month, asOf, privacy, navigate, attention, sel
   const [cardIndex, setCardIndex] = useState(0);
   const [flowIndex, setFlowIndex] = useState(5);
   const [spendCategory, setSpendCategory] = useState("");
+  const [worthIndex, setWorthIndex] = useState(5);
   const period = displayPeriod(ledger, month, asOf), cash = cashMetrics(ledger, month, asOf, period);
   const liquid = sum(ledger.accounts.filter(a => a.type !== "credit").map(a => balance(ledger, a, asOf)));
   const cards = ledger.accounts.filter(a => a.type === "credit");
-  const outstanding = sum(cards.map(a => balance(ledger, a, asOf)));
+  const position = netPosition(ledger, asOf);
+  const investments = portfolio(ledger, asOf);
+  const unpriced = investments.positions.filter(item => item.quantity > 0 && item.worth === null).length;
+  const worth = position.net + investments.marketValue;
+  const trend = privacy ? [] : Array.from({length:6}, (_, i) => {
+    const month = monthShift(asOf.slice(0, 7), i - 5);
+    const date = i === 5 ? asOf : dayShift(monthShift(month, 1) + "-01", -1);
+    const balanceTotal = sum(ledger.accounts.map(account => balance(ledger, account, date) * (account.type === "credit" ? -1 : 1)));
+    return {date, month, value:balanceTotal + portfolio(ledger, date).marketValue};
+  });
+  const trendScale = Math.max(1, ...trend.map(item => Math.abs(item.value)));
   const labels = Array.from({length: 6}, (_, i) => monthShift(month, i - 5));
   const history = labels.map(m => {const p = displayPeriod(ledger, m, asOf);return totals(ledger, p.start, p.end, asOf);});
   const maxFlow = Math.max(1, ...history.flatMap(h => [h.income, Math.max(0, h.spending)]));
@@ -52,21 +64,34 @@ export function Overview({ledger, month, asOf, privacy, navigate, attention, sel
   ];
   return <div className="atlas-overview">
     <div className="atlas-hero-grid">
-      <section className="balance-hero"><div className="hero-orbit" aria-hidden="true" /><div className="balance-top"><span className="eyebrow">LIQUID BALANCE</span><span className="local-badge"><Icon name="shield" />Local & encrypted</span></div>
-        <strong className="liquid-value financial-value">{money(liquid)}</strong><p>All bank and cash accounts · as of {dateText(asOf)}</p>
-        <button className="atlas-liquid-link" onClick={() => navigate("Accounts")}>View accounts <Icon name="right" /></button>
-        <div className="balance-foot"><button onClick={() => navigate("Accounts")}><span>Card outstanding</span><strong className="financial-value">{money(outstanding)}</strong></button>
-          <button onClick={() => navigate("Debt & credit")}><span>Cash less card liability</span><strong className="financial-value">{money(liquid - outstanding)}</strong></button></div>
+      <section className="balance-hero atlas-worth"><div className="hero-orbit" aria-hidden="true" /><div className="balance-top"><h2>Known net worth</h2><span className="local-badge"><Icon name="shield" />Local & encrypted</span></div>
+        <strong className="liquid-value financial-value">{ money(worth) }</strong><p>Assets less recorded debt · {dateText(asOf)}</p>
+        {!privacy && (position.unknown > 0 || unpriced > 0) && <p>{[
+          position.unknown ? position.unknown + (position.unknown === 1 ? " debt without a balance" : " debts without balances") : "",
+          unpriced ? unpriced + (unpriced === 1 ? " holding without a price" : " holdings without prices") : ""
+        ].filter(Boolean).join(" · ")}</p>}
+        <div className="atlas-worth-actions"><button className="atlas-liquid-link" onClick={() => navigate("Accounts")}>View accounts <Icon name="right" /></button>
+          {!privacy && <button onClick={() => navigate("Documents")}><Icon name="file" /> Import files</button>}</div>
+        <div className="balance-foot"><button onClick={() => navigate("Accounts")}><span>Cash & bank</span><strong className="financial-value">{money(liquid)}</strong></button>
+          <button onClick={() => navigate("Investments")}><span>Priced investments</span><strong className="financial-value">{money(investments.marketValue)}</strong></button>
+          <button onClick={() => navigate("Debt & credit")}><span>Known debt</span><strong className="financial-value">{money(position.debt)}</strong></button></div>
       </section>
       <div className="atlas-kpis" hidden={!widgetVisible(ledger, "kpiCards")}>{metrics.map(m => <button key={m.label} className={"atlas-kpi " + m.tone} onClick={() => navigate(m.target)} hidden={m.label === "Projected savings" && !widgetVisible(ledger, "upcomingBills")}>
         <span className="kpi-top"><span>{m.label}</span><Icon name={m.icon} /></span><strong className="financial-value">{money(m.amount)}</strong><small>{privacy && m.label === "Net savings" ? "Income less spending" : m.note}</small>
         <span className="kpi-line" aria-hidden="true"><svg viewBox="0 0 90 50"><circle cx="66" cy="42" r="30" /><circle cx="66" cy="42" r="20" /><circle cx="66" cy="42" r="40" /></svg></span>
       </button>)}</div>
     </div>
-    {attention}
     {privacy ? <section className="atlas-panel"><h2>Charts and recent activity are hidden</h2>
       <p>Use Show amounts to view spending, balances, and activity.</p></section> : <>
     <div className="atlas-charts">
+      <Panel title="Balance history" subtitle="Bank, cash, cards and priced holdings" action={() => navigate("Insights")}>
+        <div className="atlas-worth-history" aria-label="Explore balance history">{trend.map((item, i) =>
+          <button key={item.date} aria-label={monthLabel(item.month) + " " + money(item.value)} aria-pressed={worthIndex === i} onClick={() => setWorthIndex(i)}>
+            <span className="atlas-worth-column" aria-hidden="true"><i data-negative={item.value < 0} style={{height: Math.abs(item.value) / trendScale * 48 + "%"}} /></span>
+            <small>{monthLabel(item.month).split(" ")[0].slice(0, 3)}</small></button>)}</div>
+        <p aria-live="polite">{dateText(trend[worthIndex].date)} · <strong className="financial-value">{money(trend[worthIndex].value)}</strong></p>
+        <small className="muted">Historical balances exclude loans and separately tracked assets.</small>
+      </Panel>
       <Panel title="Cash flow" subtitle={"Six periods ending " + monthLabel(month)} action={() => navigate("Insights")} hidden={!widgetVisible(ledger, "cashFlow")}>
         <div className="cash-bars" role="img" aria-label={history.map((h, i) => `${monthLabel(labels[i])}: income ${money(h.income)}, spending ${money(h.spending)}`).join("; ")}>
           {history.map((h, i) => <div className="cash-bar-group" key={labels[i]}><div className="cash-bar-pair"><span className="income-bar" style={{height: `${Math.max(0, h.income) / maxFlow * 100}%`}} /><span className="spend-bar" style={{height: `${Math.max(0, h.spending) / maxFlow * 100}%`}} /></div><small>{monthLabel(labels[i]).split(" ")[0].slice(0, 3)}</small></div>)}
@@ -83,6 +108,7 @@ export function Overview({ledger, month, asOf, privacy, navigate, attention, sel
         {selectedMix && <p aria-live="polite">{selectedMix.name} · <span className="financial-value">{(selectedMix.amount / mixTotal * 100).toFixed(1)}%</span> of spending</p>}
       </Panel>
     </div>
+    {attention}
     <div className="atlas-detail-grid">
       <Panel title="Monthly budget" subtitle={configuredBudgetPeriod} action={() => navigate("Monthly budget")}>
         <span className="eyebrow">BUDGET REMAINING</span><strong className={"budget-value financial-value " + (planned && budgetActual > planned ? "over-budget" : "")}>{planned ? money(planned - budgetActual) : "Not set"}</strong>
@@ -108,5 +134,6 @@ export function Overview({ledger, month, asOf, privacy, navigate, attention, sel
       </Panel>
     </div>
     </>}
+    {privacy && attention}
   </div>;
 }

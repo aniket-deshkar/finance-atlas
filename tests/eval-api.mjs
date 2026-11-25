@@ -8,7 +8,8 @@ import {assistantCatalog} from "../api/assistant.mjs";
 
 const model = "gemini-4-hydrogen";
 const auth = {authorization:"Bearer synthetic.owner.session.token"};
-const overview = {ref:"overview",start:"2026-11-01",end:"2026-11-30",values:{savings:2_400_000}};
+const overview = {ref:"overview",start:"2026-11-01",end:"2026-11-30",asOf:"2026-11-25",
+  values:{savings:2_400_000,netWorth:7_500_000,knownDebt:1_000_000,missingDebtCount:1,unpricedHoldingCount:0}};
 const request = (overrides = {}) => ({id:randomUUID(),model,reasoning:"low",question:"What did I save?",context:[overview],history:[],...overrides});
 
 async function startWorker(t) {
