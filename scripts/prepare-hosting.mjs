@@ -28,6 +28,13 @@ if (site) {
   if (process.env.NEXT_PUBLIC_ATLAS_ORIGIN !== "https://" + site + ".web.app")
     throw Error("The built cloud origin must match the selected Firebase Hosting site.");
   config.hosting.site = site;
+  const authDomain = process.env.NEXT_PUBLIC_ATLAS_FIREBASE_AUTH_DOMAIN;
+  if (authDomain && authDomain !== site + ".web.app") {
+    const project = process.env.NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT;
+    if (!/^[a-z][a-z0-9-]{4,29}$/.test(project ?? "") || authDomain !== project + ".firebaseapp.com")
+      throw Error("Use the Hosting site's domain or the configured project's Firebase Auth domain.");
+    policy.value += "; frame-src 'self' https://" + authDomain;
+  }
 }
 const revision = process.env.ATLAS_RELEASE_SHA;
 if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw Error("ATLAS_RELEASE_SHA must be a full Git commit SHA.");
