@@ -1,5 +1,5 @@
 import {useEffect, useEffectEvent, useRef, useState, type ReactNode} from "react";
-import {Button, Dialog, Portal, Textarea} from "@chakra-ui/react";
+import {Button, Dialog, Popover, Portal, Textarea} from "@chakra-ui/react";
 import {assistantFact, localAnswer, usd, type Fact, type Model, type Turn, type Usage} from "../lib/assistant";
 import {checkedJson, cloudConfigured, cloudFetch, json, watchCloudConnection} from "../lib/cloud";
 import {field, row} from "../lib/ledger";
@@ -10,6 +10,7 @@ import {minor} from "../lib/ledger";
 import type {Staged} from "../lib/files";
 import {Editor, type FeatureProps} from "./feature-ui";
 import {Icon} from "./icons";
+import {GoogleMark} from "./welcome";
 
 type Catalog = {enabled?: boolean; models: Model[]; maxOutput?: number; research: boolean};
 type Result = {answer: string; references: string[]; usage?: Usage};
@@ -21,10 +22,12 @@ const sourceViews = views.filter(view => !["Assistant", "Data & settings", "Docu
 function ModelPicker({catalog, id, reasoning, select, reason}: {catalog: Catalog | null; id: string; reasoning: string;
   select: (id: string) => void; reason: (level: string) => void}) {
   const current = catalog?.models.find(model => model.id === id && model.enabled);
+  const providers = [...new Set(catalog?.models.map(model => model.provider))];
   return <div className="filter-row assistant-models"><label>Model<select name="assistantModel" value={id} onChange={event => select(event.target.value)}>
     <option value="local">On-device figures</option>
     {id !== "local" && !catalog?.models.some(model => model.id === id) && <option value={id} disabled>Saved cloud model · unavailable</option>}
-    {catalog?.models.length ? <optgroup label="Vertex AI">{catalog.models.map(model => <option disabled={!model.enabled} key={model.id} value={model.id}>{model.label}{model.enabled ? "" : " · unavailable"}</option>)}</optgroup> : null}</select></label>
+    {providers.map(provider => <optgroup key={provider} label={provider}>{catalog?.models.filter(model => model.provider === provider).map(model =>
+      <option disabled={!model.enabled} key={model.id} value={model.id}>{model.label}{model.enabled ? "" : " · unavailable"}</option>)}</optgroup>)}</select></label>
     {current && <label>Reasoning<select value={current.levels.includes(reasoning) ? reasoning : current.fallback}
       onChange={event => reason(event.target.value)}>{current.levels.map(level => <option key={level}>{level}</option>)}</select></label>}
   </div>;
@@ -67,13 +70,16 @@ export function AssistantSettings({ledger, save, busy, cloudControls}: FeaturePr
     return () => {unsubscribe();request?.abort();};
   }, []);
   return <div className="stack atlas-ai-settings">{cloudControls}<section className="panel stack"><h2>AI & providers</h2>
-    <p className="muted">{cloudConfigured ? "Connect to Google Cloud, then refresh the enabled models and usage." :
+    <p className="muted">{cloudConfigured ? "Connect your Google account to load the available cloud models and see usage." :
       "On-device figures are available in Assistant. Cloud models require a configured Finance Atlas deployment."}</p>
     {catalog?.enabled === false && <p role="status">Cloud AI is disabled on this deployment. On-device figures are available.</p>}
     <fieldset disabled={busy}><ModelPicker catalog={catalog} id={id} reasoning={field(defaults,"reasoning")}
       select={value => setDefault("model",value)} reason={value => setDefault("reasoning",value)} /></fieldset>
-    {catalog?.models.filter(model => model.enabled).map(model => <p key={model.id} className="muted">{model.label} · {model.provider} · {model.location} · ${model.input} / ${model.output} per million input / output tokens</p>)}
-    {catalog?.models.filter(model => !model.enabled).map(model => <p key={model.id} className="muted">{model.label} · {model.unavailable || "Unavailable"}</p>)}
+    {catalog?.models.map(model => <div className="atlas-provider-row" key={model.id}>
+      <span className="atlas-provider-mark">{model.provider.startsWith("OpenAI") ? <img src="/brands/openai.svg" alt="OpenAI" width="48" height="17" /> : <GoogleMark />}</span>
+      <div><strong>{model.label}</strong><small>{model.enabled ? model.provider + " · " + (model.processing || model.location) : model.unavailable || "Unavailable"}</small></div>
+      {model.enabled && <small>${model.input} in / ${model.output} out per million tokens</small>}
+    </div>)}
     {cloudConfigured && <button onClick={() => void refresh()}>Refresh models and AI usage</button>}
     {message && <p role="status">{message}</p>}
   </section><section className="panel stack"><h2>AI usage</h2>
@@ -109,6 +115,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   const fab = useRef<HTMLButtonElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const conversation = useRef<HTMLDivElement>(null);
+  const review = useRef<HTMLDivElement>(null);
   const [cloudStatus, setCloudStatus] = useState<"disconnected" | "loading" | "ready" | "error">("disconnected");
   const alive = useRef(true);
   const displayed = full || floating;
@@ -169,10 +176,13 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   const bytes = new TextEncoder().encode(JSON.stringify([rawQuestion,context,history])).length;
   const estimate = model ? Math.ceil((bytes + 1200) * 3 * (model.input ?? 0) + (catalog?.maxOutput ?? 768) * 3 * (model.output ?? 0)) : 0;
   const preview = JSON.stringify({model:model?.id, reasoning, question:rawQuestion, context, history}, null, 2);
-  const canSend = Boolean(rawQuestion && !privacy && !loading && (modelId === "local" || model && approval === preview));
+  const canSend = Boolean(rawQuestion && !privacy && !loading && (modelId === "local" || model));
+  const reviewing = Boolean(model && canSend && approval === preview);
+
+  useEffect(() => {if (reviewing) review.current?.focus();}, [reviewing]);
 
   async function send() {
-    if (!canSend || !alive.current || controller.current) return;
+    if (!canSend || (model && !reviewing) || !alive.current || controller.current) return;
     const signal = new AbortController();
     controller.current = signal;
     setLoading(true);setMessage("");setApproval("");setIncludeHistory(false);
@@ -207,64 +217,83 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
     } else setFloating(false);
   }
 
+  const choose = (id: string) => {setChosen(id);setLevel("");setApproval("");};
+  const requestSend = () => {
+    if (!canSend) return;
+    if (model) setApproval(preview);
+    else void send();
+  };
+  const chooseStarter = (item: typeof starters[number]) => {
+    attach({view:item.view});setQuestion(item.text);composer.current?.focus();
+  };
+
   const chat = <section className={"atlas-chat assistant-workspace " + (full ? "panel atlas-content-enter" : "")}>
-      <header className="panel-head"><div className="atlas-chat-heading"><span className="assistant-mark"><Icon name="chat" /></span><div>
-        {full ? <h2>Ask Finance Atlas</h2> : <Dialog.Title>Finance Atlas Assistant</Dialog.Title>}
-        <p>{model ? model.label + " · Cloud" : "On-device figures"}</p></div></div><div className="button-row">
-        {!full && <button onClick={() => {navigate("Assistant");setFloating(false);}}>Open full Assistant</button>}
-        {!full && <Dialog.CloseTrigger asChild><button aria-label="Close Assistant" type="button">×</button></Dialog.CloseTrigger>}
-        {!privacy && full && turns.length > 0 && <button disabled={loading} onClick={() => setConfirmClear(true)}>Clear chat</button>}
+      <header className="atlas-chat-bar"><div className="atlas-chat-heading"><span className="assistant-mark"><Icon name="chat" /></span><div>
+        {full ? <h2>Finance Atlas Assistant</h2> : <Dialog.Title>Finance Atlas Assistant</Dialog.Title>}
+        <p>{model ? model.label : "On-device · Private"}</p></div></div><div className="atlas-chat-actions">
+        {!privacy && <Popover.Root positioning={{placement:"bottom-end", gutter:10}}>
+          <Popover.Trigger asChild><button type="button" className="atlas-chat-tool atlas-chat-model-trigger" aria-label="Choose AI model" title="Choose AI model">Model <Icon name="down" /></button></Popover.Trigger>
+          <Popover.Positioner className="atlas-chat-popover"><Popover.Content className="atlas-chat-model-panel">
+            <Popover.Title>Choose a model</Popover.Title>
+            <fieldset disabled={loading}><ModelPicker catalog={catalog} id={modelId} reasoning={preferred}
+              select={choose} reason={value => {setLevel(value);setApproval("");}} /></fieldset>
+            {cloudStatus === "loading" && <p role="status">Loading cloud models…</p>}
+            {cloudStatus === "error" && <p role="status">Cloud models could not load. Check your connection in Settings.</p>}
+            {cloudStatus === "disconnected" && cloudConfigured && <button type="button" onClick={() => {setFloating(false);navigate("Data & settings", "AI & providers");}}>Connect Google for cloud models</button>}
+            {catalog?.enabled === false && <p>Cloud AI is disabled for this workspace.</p>}
+            {!model && modelId !== "local" && <button type="button" onClick={() => choose("local")}>Switch to on-device answers</button>}
+          </Popover.Content></Popover.Positioner>
+        </Popover.Root>}
+        {!full && <button type="button" className="atlas-chat-tool" aria-label="Open full Assistant" title="Open full Assistant" onClick={() => {navigate("Assistant");setFloating(false);}}><Icon name="expand" /></button>}
+        {!full && <Dialog.CloseTrigger asChild><button className="atlas-chat-tool" aria-label="Close Assistant" title="Close Assistant" type="button"><Icon name="close" /></button></Dialog.CloseTrigger>}
+        {!privacy && full && turns.length > 0 && <button className="atlas-chat-tool" aria-label="Clear chat" title="Clear chat" disabled={loading} onClick={() => setConfirmClear(true)}><Icon name="trash" /></button>}
       </div></header>
-      {privacy ? <p>Show amounts to open your conversation and send questions.</p> : <>
+      {privacy ? <p className="atlas-chat-private">Show amounts to open your conversation and send questions.</p> : <>
       <div ref={conversation} className="atlas-chat-history" role="log" aria-label="Conversation">
         {!turns.length && <div className="atlas-chat-intro">
-          <h3>What would you like to review?</h3>
-          <p className="muted">Choose a question to attach the relevant figures, or write your own.</p>
-          <div className="button-row">{starters.map(item => <button type="button" key={item.text} onClick={() => {
-            attach({view: item.view});setQuestion(item.text);composer.current?.focus();
-          }}>{item.text}<Icon name="right" /></button>)}</div>
+          <span className="atlas-chat-intro-mark"><Icon name="sparkle" /></span>
+          <h3>How can I help?</h3>
+          <div className="atlas-chat-starters">{starters.map(item => <button type="button" key={item.text} onClick={() => chooseStarter(item)}>
+            {item.text}<Icon name="right" /></button>)}</div>
         </div>}
         {turns.map((turn,i) => <article className="atlas-message" data-role={turn.role} key={i}>
           <small>{turn.role === "user" ? "You" : "Assistant"}</small><p>{turn.text}</p>
           {turn.sources?.map(source => <button key={source.ref} onClick={() => {navigate(source.view,source.id);setFloating(false);}}>{source.label}</button>)}
         </article>)}
-        {loading && <article className="atlas-message" data-role="assistant"><p>Preparing your answer…</p></article>}
+        {loading && <><article className="atlas-message" data-role="user"><small>You</small><p>{rawQuestion}</p></article>
+          <article className="atlas-message" data-role="assistant"><small>Assistant</small><p>Preparing your answer…</p></article></>}
       </div>
-      <form className="stack assistant-composer" onSubmit={event => {event.preventDefault();void send();}}>
-        <fieldset disabled={loading}><ModelPicker catalog={catalog} id={modelId} reasoning={preferred}
-          select={id => {setChosen(id);setLevel("");setApproval("");}} reason={value => {setLevel(value);setApproval("");}} /></fieldset>
-        {cloudStatus === "loading" && <p role="status">Loading cloud models…</p>}
-        {cloudStatus === "error" && <p role="status">Cloud models could not be loaded. Check your connection in Settings.</p>}
-        {cloudStatus === "disconnected" && cloudConfigured && <button className="assistant-cloud-link" type="button" onClick={() => {setFloating(false);navigate("Data & settings", "AI & providers");}}>Connect Google to use cloud models</button>}
-        {catalog?.enabled === false && <p role="status">Cloud AI is disabled for this workspace.</p>}
-        {!model && modelId !== "local" && <p className="muted">The selected cloud model is unavailable.</p>}
-        {!model && modelId !== "local" && <button type="button" onClick={() => {setChosen("local");setApproval("");}}>Use on-device figures</button>}
-        <div className="button-row"><label><span className="sr-only">Reference another tab</span>
-          <select name="assistantReference" value="" onChange={event => {if(event.target.value) attach({view:event.target.value as View});}}>
-            <option value="">@ Reference a tab</option>
-            {sourceViews.map(item =>
-              <option value={item} key={item}>{label(item)}</option>)}
-          </select></label>
-          {full && <button type="button" aria-expanded={attachment} onClick={() => setAttachment(!attachment)}>Add document figures</button>}
-        </div>
-        {attachments.length > 0 && <div className="button-row">{attachments.map(item => <button type="button" key={item.link.ref}
+      <form className="assistant-composer" onSubmit={event => {event.preventDefault();requestSend();}}>
+        {(!model && modelId !== "local") && <div className="atlas-chat-status" role="status">Selected model unavailable. <button type="button" onClick={() => choose("local")}>Use on-device answers</button></div>}
+        {attachments.length > 0 && <div className="atlas-chat-chips">{attachments.map(item => <button type="button" key={item.link.ref}
+          disabled={loading} aria-label={"Remove reference to " + item.link.label}
           title={item.fact.start + " to " + item.fact.end}
           onClick={() => {if (item.link.view === "Documents") setLinkedDocument(null);
-            else setSources(values => values.filter(x => x.view !== item.link.view));setApproval("");}}>{item.link.label} ×</button>)}</div>}
-        <label><span className="sr-only">Your question</span><Textarea unstyled name="assistantQuestion" autoComplete="off" ref={composer} rows={2} maxLength={1600} value={question} onChange={event => {
+            else setSources(values => values.filter(x => x.view !== item.link.view));setApproval("");}}>{item.link.label}<Icon name="close" /></button>)}</div>}
+        <label><span className="sr-only">Your question</span><Textarea unstyled name="assistantQuestion" autoComplete="off" ref={composer} rows={2} maxLength={1600} value={question} disabled={loading} onChange={event => {
           setQuestion(event.target.value);setApproval("");
-        }} placeholder="How much have I saved in this period?" /></label>
-        {model && rawQuestion && <>
-          <p className="muted">{model.provider} · {model.location} · {model.label} · {reasoning} · estimated up to {usd(estimate)}</p>
-          <p className="muted">Only the question and figures below are sent. Original documents stay on this device.</p>
-          {turns.length > 0 && <label className="checkbox"><input type="checkbox" name="includeHistory" checked={includeHistory} onChange={event => {
-            setIncludeHistory(event.target.checked);setApproval("");
-          }} />Include up to four previous messages</label>}
-          <details><summary>Review what will be sent</summary><pre className="atlas-context">{preview}</pre></details>
-          <label className="checkbox"><input type="checkbox" checked={approval === preview} onChange={event => setApproval(event.target.checked ? preview : "")} />
-            Send the reviewed information to {model.provider} for this reply</label>
-        </>}
-        <Button unstyled type="submit" className="primary assistant-send" disabled={!canSend}>{loading ? "Preparing answer…" : "Send question"}<Icon name="right" /></Button>
+        }} onKeyDown={event => {if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+          event.preventDefault();requestSend();
+        }}} placeholder="Ask about your finances…" /></label>
+        <div className="atlas-chat-composer-tools">
+          <div className="atlas-chat-attachments"><label><span className="sr-only">Reference another tab</span>
+            <select name="assistantReference" value="" disabled={loading} onChange={event => {if(event.target.value) attach({view:event.target.value as View});}}>
+              <option value="">+ Add context</option>{sourceViews.map(item => <option value={item} key={item}>{label(item)}</option>)}
+            </select></label>
+            {full && <button type="button" aria-expanded={attachment} disabled={loading} onClick={() => setAttachment(!attachment)}><Icon name="file" />Document</button>}
+            {model && turns.length > 0 && <label className="atlas-chat-include-history"><input type="checkbox" name="includeHistory" disabled={loading} checked={includeHistory} onChange={event => {
+              setIncludeHistory(event.target.checked);setApproval("");
+            }} />Recent chat</label>}
+          </div>
+          <Button unstyled type="submit" className="primary assistant-send" aria-label="Send question" title="Send question" disabled={!canSend}><Icon name="send" /></Button>
+        </div>
+        {reviewing && model && <div className="atlas-chat-review" ref={review} tabIndex={-1}>
+          <strong>Review this cloud message</strong>
+          <p>{model.label} · {model.processing || model.location} · estimated up to {usd(estimate)}</p>
+          <details><summary>View question and selected figures</summary><pre className="atlas-context">{preview}</pre></details>
+          <div className="button-row"><button type="button" onClick={() => {setApproval("");composer.current?.focus();}}>Back</button>
+            <button type="button" className="primary" onClick={() => void send()}>Send to {model.provider}</button></div>
+        </div>}
       </form>
       {full && attachment && renderDocuments(document => {
         const hints = documentHints(document);
@@ -284,7 +313,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
         setLinkedDocument({id:document.id,label:document.name,fact:{ref,start:dates?.[0] ?? document.date,end:dates?.at(-1) ?? document.date,values}});
         setAttachment(false);setApproval("");setMessage("Extracted figures attached for review.");
       })}
-      {message && <p role="status">{message}</p>}
+      {message && <p className="atlas-chat-status" role="status">{message}</p>}
       </>}
     </section>;
   return <>
@@ -293,7 +322,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
         aria-label="Open Assistant" aria-haspopup="dialog" aria-expanded={floating} onClick={openFloating}>
         <Icon name="chat" /><span>Assistant</span>
       </Button>
-      <Dialog.Root open={floating} onOpenChange={event => setFloating(event.open)}
+      <Dialog.Root unstyled open={floating} onOpenChange={event => setFloating(event.open)} scrollBehavior="inside"
         finalFocusEl={() => fab.current} lazyMount unmountOnExit>
         <Portal><Dialog.Backdrop className="assistant-backdrop" />
           <Dialog.Positioner className="assistant-positioner"><Dialog.Content className="assistant-sheet">

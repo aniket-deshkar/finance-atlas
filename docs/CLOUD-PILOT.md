@@ -167,24 +167,29 @@ summaries. Use a regional model when you require regional processing.
     "output": 1.5,
     "pricingDate": "2026-11-25"
   },
-  "gemini-4-hydrogen": {
+  "gpt-oss-120b-maas": {
     "location": "global",
-    "input": 1.5,
-    "output": 7.5,
+    "input": 0.09,
+    "output": 0.36,
     "pricingDate": "2026-11-25"
-  },
-  "gemini-4-carbon": {
-    "location": "global",
-    "input": 4,
-    "output": 20,
-    "pricingDate": "2026-12-01"
   }
 }
 ```
 
-This example uses the published global standard rates, including the posted
-December 1 rates for Carbon as a conservative estimate. Verify pricing at
-deployment, including grounding, cache, reasoning, regional and long-context
+GPT-OSS 120B uses the managed Model Garden chat endpoint and the Cloud Run
+worker's Google Cloud identity. Verify Model Garden access with that identity
+before adding the model to the deployed catalog. Its endpoint is global and
+Google lists the United States as its processing location.
+
+GPT-6 Luna (`gpt-6-luna`) and GPT-6.1 Terra (`gpt-6.1-terra`) use the
+OpenAI Responses endpoint hosted by Google Cloud. Both require Model Garden
+private-preview access and available project capacity. Add each ID to
+`ATLAS_CHAT_MODELS` with `location: "global"` and the rates from the
+project's approved offer after the worker identity returns a valid result.
+The worker sends previews with response storage disabled. [OpenAI on Google Cloud](https://developers.openai.com/api/docs/guides/google-cloud)
+
+Dashboard analysis and policy research use their configured Gemini models.
+Verify pricing at deployment, including grounding, cache, reasoning, regional and long-context
 charges where applicable. The app reports an estimate calculated from usage.
 Provider invoices determine the final charge. Set
 `ATLAS_AI_MONTHLY_USD_MICROS` to the app's shared monthly AI budget in millionths

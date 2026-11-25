@@ -5,7 +5,7 @@ import { Switch } from "@chakra-ui/react";
 import { addEntry, balance, field, hasReversal, minor, money, monthLabel, monthShift, row, rows, type Entry, type Ledger, type Row } from "../lib/ledger";
 import { cardCycle, cardUsage, cashMetrics, categoryActual, debtRows, matchRecordedBills, netPosition, reconcileBalance,
   repeatingPayments, settingsV6, simulateDebt, sum } from "../lib/finance";
-import { attachReceipt, base64, csvEncode, download, importStatement, parseStatement, receiptArchive, statementColumns, statementMatches, unbase64, type Staged, type StatementColumns } from "../lib/files";
+import { attachReceipt, base64, csvEncode, decodeStatementFile, download, importStatement, inferStatementDateOrder, receiptArchive, reviewStatement, statementColumns, statementMatches, unbase64, type Staged, type StatementColumns } from "../lib/files";
 import { accountName, amount, Check, Editor, Input, Panel, Select, Stats, Table, value, type FeatureProps } from "./feature-ui";
 import { deriveKey, deviceBackupLimit, deviceRecord, exportDeviceRecords, openEncryptedBackup, restoreDeviceRecords, serializeEnvelope, snapshots, type Envelope } from "../lib/vault";
 import { documentDigest, saveDocumentIndex } from "./documents";
@@ -13,6 +13,7 @@ import { readPdf, rowKey, statementCsvFromText } from "../lib/documents";
 import type { BackupControls } from "./backup";
 import { layouts, navGroups, viewIds, views, widgets } from "../lib/navigation";
 import { auditWorkbook } from "../lib/reports";
+import { Icon } from "./icons";
 
 export function DebtView(props: FeatureProps) {
   const {ledger, asOf, save, busy} = props;
@@ -108,7 +109,8 @@ const transactionLabels: Record<Entry["type"], string> = {expense:"Expense", inc
 
 export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: CryptoKey; initialAccount?: string}) {
   const {ledger, asOf, save, busy, scope, vaultKey} = props;
-  const [accountId, setAccountId] = useState(ledger.accounts.find(a => a.id === props.initialAccount)?.id ?? ""), [staged, setStaged] = useState<Staged[]>([]);
+  const [accountId, setAccountId] = useState(ledger.accounts.find(a => a.id === props.initialAccount)?.id ??
+    (ledger.accounts.length === 1 ? ledger.accounts[0].id : "")), [staged, setStaged] = useState<Staged[]>([]);
   const [file, setFile] = useState<{name:string; bytes:ArrayBuffer; pages:string[]; text:string; labels:string[]} | null>(null);
   const [columns, setColumns] = useState<StatementColumns | null>(null);
   const [error, setError] = useState(""), [notice, setNotice] = useState("");
@@ -118,7 +120,8 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
   const [working,setWorking] = useState(false);
   const saving = useRef(false);
   const [dateOrder, setDateOrder] = useState<"day-first" | "month-first">("day-first");
-  const [debitPositive, setDebitPositive] = useState(false);
+  const [amountPolarity, setAmountPolarity] = useState<"" | "credit" | "debit">("");
+  const [issues, setIssues] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const cfg = settingsV6(ledger), reconciled = row(cfg.reconciled), account = ledger.accounts.find(a => a.id === accountId);
   const selected = staged.filter(line => line.selected || line.match).length;
@@ -126,26 +129,40 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
   const repeatedMatch = new Set(matches).size !== matches.length;
   const missingCounterpart = staged.some(({selected, match, entry}) => selected && !match &&
     (entry.type === "transfer" || entry.type === "cardPayment") && (!entry.accountId || !entry.toId));
+  const needsPolarity = Boolean(columns && columns.amount >= 0 && columns.direction < 0 && columns.credit < 0 && columns.debit < 0);
+  const debitPositive = amountPolarity === "debit";
   useEffect(() => () => {request.current++;passwordRef.current?.cancel();}, []);
+  function buildPreview(text: string, mapping: StatementColumns, order: typeof dateOrder, target = accountId) {
+    setError("");setNotice("");setPage(0);setStaged([]);setIssues([]);
+    try {
+      const result = reviewStatement(text, ledger, target, asOf, order, {columns:mapping, debitPositive});
+      setStaged(result.entries);setIssues(result.issues);
+    } catch (problem) {setError(problem instanceof Error ? problem.message : "Could not map the statement.");}
+  }
   async function upload(picked: File) {
     const id = ++request.current;
-    setError("");setNotice("");setFile(null);setColumns(null);setStaged([]);setWorking(true);
+    setError("");setNotice("");setFile(null);setColumns(null);setStaged([]);setIssues([]);setAmountPolarity("");setWorking(true);
     try {
       const pdf = /\.pdf$/i.test(picked.name);
-      if ((!pdf && !/\.csv$/i.test(picked.name)) || picked.size > (pdf ? 12_000_000 : 3_000_000))
-        throw Error("Choose a CSV up to 3 MB or a PDF up to 12 MB.");
+      if ((!pdf && !/\.(?:csv|tsv)$/i.test(picked.name)) || picked.size > (pdf ? 12_000_000 : 3_000_000))
+        throw Error("Choose a CSV or TSV up to 3 MB, or a PDF up to 12 MB.");
       const bytes = await picked.arrayBuffer();
       const pages = pdf ? await readPdf(bytes.slice(0), wrong => new Promise((resolve, reject) => {
         if (request.current !== id) {reject(Error("Upload canceled."));return;}
         const prompt = {wrong, resolve, cancel: () => reject(Error("Upload canceled."))};
         passwordRef.current = prompt;setPassword(prompt);
-      })) : [await picked.text()];
+      })) : [decodeStatementFile(bytes)];
       if (request.current !== id) return;
       const text = pdf ? statementCsvFromText(pages) : pages[0];
-      if (!text) throw Error("This PDF has no supported date, amount and debit/credit rows. Use the bank or card issuer’s CSV export.");
-      const {labels, columns} = statementColumns(text);
+      if (!text) throw Error(pages.some(Boolean) ? "This PDF layout could not be mapped confidently. Try the issuer’s CSV export." :
+        "This PDF has no selectable text. Try the issuer’s CSV export or a text-based PDF.");
+      const {labels, columns, table} = statementColumns(text);
       if (!labels.length) throw Error("The statement is empty.");
       setFile({name:picked.name,bytes,pages,text,labels});setColumns(columns);
+      const order = inferStatementDateOrder(table, columns.date) ?? "day-first";
+      setDateOrder(order);
+      if (account && columns.date >= 0 && (columns.debit >= 0 || columns.credit >= 0 || columns.amount >= 0 && columns.direction >= 0))
+        buildPreview(text, columns, order);
     } catch (problem) {
       if (request.current === id) setError(problem instanceof Error ? problem.message : "Could not read the statement.");
     } finally {
@@ -153,36 +170,48 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
     }
   }
   function preview() {
-    if (!file || !columns) return;
-    setError("");setNotice("");setPage(0);setStaged([]);
-    try {setStaged(parseStatement(file.text, ledger, accountId, asOf, dateOrder, {columns,debitPositive}));}
-    catch (problem) {setError(problem instanceof Error ? problem.message : "Could not map the statement.");}
+    if (!file || !columns || needsPolarity && !amountPolarity) return;
+    buildPreview(file.text, columns, dateOrder);
   }
-  return <div className="stack"><Panel title="Import bank or credit card transactions" subtitle="Upload a statement, map its columns and review what will be added to your ledger.">
+  return <div className="stack"><Panel title="Import bank or credit card transactions" subtitle="Upload a statement to find transactions. Review them before anything is added to your ledger.">
     {!ledger.accounts.length && <p>Add a bank account or credit card in Accounts before importing a statement.</p>}
     <fieldset className="statement-setup" disabled={busy || working || !ledger.accounts.length}>
-      <label>Statement account<select name="statementAccount" value={accountId} onChange={e => {setAccountId(e.target.value);setStaged([]);}}>
+      <label>Statement account<select name="statementAccount" value={accountId} onChange={e => {
+        const target = e.target.value;
+        setAccountId(target);setStaged([]);setIssues([]);setError("");setNotice("");
+        if (target && file && columns && columns.date >= 0 &&
+            (columns.debit >= 0 || columns.credit >= 0 || columns.amount >= 0 && (columns.direction >= 0 || amountPolarity)))
+          buildPreview(file.text, columns, dateOrder, target);
+      }}>
         <option value="">Choose an account</option>{ledger.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-      <label className="statement-upload">Upload statement<input type="file" name="statementFile" accept=".csv,.pdf,text/csv,application/pdf" disabled={!account} onChange={e => {
-        const picked = e.currentTarget.files?.[0];e.currentTarget.value = "";if (picked) void upload(picked);
-      }} /></label>
+      <label className="statement-upload"><Icon name="file" /><span>Upload statement<small>CSV, TSV or text PDF</small></span>
+        <input type="file" name="statementFile" accept=".csv,.tsv,.pdf,text/csv,text/tab-separated-values,application/pdf" onChange={e => {
+          const picked = e.currentTarget.files?.[0];e.currentTarget.value = "";if (picked) void upload(picked);
+        }} /></label>
     </fieldset>
     {working && <p role="status">Processing statement…</p>}
     {file && columns && <fieldset className="statement-mapping" disabled={busy || working}>
       <legend>{file.name}</legend>
-      <p className="muted">Check the detected columns. For a single unsigned amount column, use a debit/credit indicator or confirm which sign represents money out.</p>
+      <p className="muted">{staged.length ? "Columns detected. Check the rows below or adjust the mapping." :
+        account ? "Confirm the column mapping and date format to preview transactions." : "Choose the bank account or card for this statement."}</p>
       <div className="statement-setup">{Object.entries(mappingLabels).map(([key,label]) => {
         const field = key as keyof StatementColumns;
         return <label key={key}>{label}<select name={key} value={columns[field]} onChange={e => {
-          setColumns({...columns,[field]:Number(e.target.value)});setStaged([]);
+          setColumns({...columns,[field]:Number(e.target.value)});setStaged([]);setIssues([]);
         }}><option value={-1}>No column</option>{file.labels.map((heading,index) => <option key={index} value={index}>{heading || "Column " + (index + 1)}</option>)}</select></label>;
       })}
-      <label>Numeric date format<select value={dateOrder} onChange={event => {setDateOrder(event.target.value as "day-first" | "month-first");setStaged([]);}}><option value="day-first">Day / month / year</option><option value="month-first">Month / day / year</option></select></label>
-      {columns.amount >= 0 && <label>Positive amounts mean<select value={debitPositive ? "debit" : "credit"} onChange={e => {setDebitPositive(e.target.value === "debit");setStaged([]);}}><option value="credit">Money in / card credit</option><option value="debit">Money out / card charge</option></select></label>}
-      </div><button type="button" className="primary" disabled={!account} onClick={preview}>Preview transactions</button>
+      <label>Numeric date format<select value={dateOrder} onChange={event => {setDateOrder(event.target.value as "day-first" | "month-first");setStaged([]);setIssues([]);}}><option value="day-first">Day / month / year</option><option value="month-first">Month / day / year</option></select></label>
+      {needsPolarity && <label>Positive amounts mean<select value={amountPolarity} onChange={e => {setAmountPolarity(e.target.value as typeof amountPolarity);setStaged([]);setIssues([]);}}><option value="">Choose the statement’s sign convention</option><option value="credit">Money in / card credit</option><option value="debit">Money out / card charge</option></select></label>}
+      </div><button type="button" className="primary" disabled={!account || needsPolarity && !amountPolarity} onClick={preview}>Preview transactions</button>
     </fieldset>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
+    {issues.length > 0 && <details className="statement-row-issues">
+      <summary>{issues.length} {issues.length === 1 ? "row was" : "rows were"} skipped during parsing</summary>
+      <p>Correct these rows in the source file or add them manually. They won’t be imported.</p>
+      <ul>{issues.slice(0, 20).map(issue => <li key={issue}>{issue}</li>)}</ul>
+      {issues.length > 20 && <p>{issues.length - 20} more rows also need attention.</p>}
+    </details>}
     {staged.length > 0 && <><div className="statement-review"><strong>{staged.length} rows · {selected} ready to import or match</strong>
       <p className="muted">Review transfers, card repayments and similar transactions before including them.</p></div>
       <Table headers={["Include", "Date / description", "Type / category", "Amount", "Match recorded entry"]}>{staged.slice(page * 40, page * 40 + 40).map((item, index) => {
@@ -210,7 +239,7 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
           {(item.entry.type === "income" ? ledger.categories.income : ledger.categories.expense).map(c => <option key={c}>{c}</option>)}</select>}</td><td>{money(minor(item.entry.amount))}</td>
         <td><select aria-label={"Row " + (i + 1) + " match"} value={item.match} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, match: e.target.value, selected: false} : r))}>
           <option value="">Create new entry if included</option>{statementMatches(ledger, item).map(t =>
-            <option value={t.id} key={t.id}>{t.note || t.type} · {transactionLabels[t.type]}</option>)}</select>{item.possible && !item.match && <small>Review before including this row.</small>}</td></tr>;
+            <option value={t.id} key={t.id}>{t.note || t.type} · {transactionLabels[t.type]} · {t.date}</option>)}</select>{item.possible && !item.match && <small>Review before including this row.</small>}</td></tr>;
       })}</Table>
       {staged.length > 40 && <div className="button-row"><button disabled={!page} onClick={() => setPage(page - 1)}>Previous rows</button>
         <span>Page {page + 1} of {Math.ceil(staged.length / 40)}</span><button disabled={(page + 1) * 40 >= staged.length} onClick={() => setPage(page + 1)}>Next rows</button></div>}
@@ -230,7 +259,7 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
           const batch = {id,name:file.name,kind:"Statement" as const,pages:file.pages,date:asOf,accountId,staged,statementMapping:{columns,dateOrder,debitPositive}};
           if (!previous) await saveDocumentIndex(scope,vaultKey,batch);
           if (await save(s => importStatement(s,staged.map(line => ({...line,entry:{...line.entry,importDocumentId:id,importRowKey:rowKey(line)}})),file.name,"",asOf,false),true)) {
-            setStaged([]);setFile(null);setColumns(null);
+            setStaged([]);setFile(null);setColumns(null);setIssues([]);
             setNotice(selected + (selected === 1 ? " row" : " rows") + " imported or matched. The encrypted original is in Documents.");
             const outcomes = Object.fromEntries(staged.filter(line => line.selected || line.match).map(line => [rowKey(line),line.match || line.entry.id]));
             await saveDocumentIndex(scope,vaultKey,{...batch,staged:staged.filter(line => !outcomes[rowKey(line)]),outcomes:{...previous?.outcomes,...outcomes}});
@@ -343,7 +372,18 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
     return "Encrypted device backup prepared.";
   }
   return <>
-    {section === "Data, backup & security" && <><Panel title="Encrypted ledger backups">
+    {section === "Data, backup & security" && <><Panel title="Workspace lock">
+      <form className="filter-row" onSubmit={event => {
+        event.preventDefault();
+        const minutes = Number(new FormData(event.currentTarget).get("idleMinutes"));
+        void save(s => ({...s, settings:{...s.settings,dailyV6:{...settingsV6(s),idleLockMinutes:minutes}}}));
+      }}>
+        <Select name="idleMinutes" label="Lock after inactivity" initial={String(cfg.idleLockMinutes || 0)}
+          options={[{id:"0",name:"Off"},{id:"5",name:"5 minutes"},{id:"15",name:"15 minutes"},{id:"30",name:"30 minutes"},{id:"60",name:"60 minutes"}]} />
+        <button disabled={busy}>Save vault preferences</button>
+      </form>
+      <p className="muted">Unlock with your vault passphrase after inactivity. Unsaved form edits are discarded when the vault locks.</p>
+    </Panel><Panel title="Encrypted ledger backups">
       <div className="backup-summary"><strong>Automatic recovery on this device</strong><span role="status">{backups.localStatus}</span></div>
       <p className="muted">Finance Atlas keeps an encrypted recovery copy when you unlock the workspace or save changes. Clearing app storage also clears these copies.</p>
       <p role="status">{backups.message}</p>{backups.folder && <p className="muted">Selected folder · {backups.folder}</p>}
@@ -372,8 +412,8 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
       <button className="section-gap" onClick={async () => setRecovery(await snapshots())}>Browse local recovery snapshots</button>
       <p className="muted">Restores are previewed before replacing the workspace. Browser recovery copies can be erased when site data is cleared.</p>
     </Panel></>}
-    {section === "Appearance & navigation" && <Panel title="Appearance">
-      <div className="appearance-controls"><span><strong>Workspace theme</strong><small className="muted">The same palette across dashboards, forms and menus.</small></span>
+    {section === "Appearance & navigation" && <Panel title="Display preferences">
+      <div className="appearance-controls"><strong>Workspace theme</strong>
         <div className="segmented" aria-label="Workspace theme">{["light", "dark"].map(theme => <button key={theme} aria-label={"Use " + theme + " theme"} disabled={busy} aria-pressed={(field(row(ledger.settings.appearance), "theme") || "light") === theme} onClick={() => save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), theme}}}))}>{theme === "light" ? "Light" : "Dark"}</button>)}</div></div>
       <Switch.Root unstyled className="atlas-setting-switch" checked={row(ledger.settings.appearance).reduceMotion === true} disabled={busy}
         onCheckedChange={({checked}) => void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), reduceMotion: checked}}}))}>
@@ -385,17 +425,15 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
     {section === "Finance & automation" && <><Panel title="Reporting and reminders"><form key={JSON.stringify([ledger.settings.reportingPeriod, cfg])} onSubmit={event => {event.preventDefault();const data = new FormData(event.currentTarget);void save(s => ({
         ...s, settings: {...s.settings, reportingPeriod: {mode: value(data, "mode"), day: Number(value(data, "day"))},
           dailyV6: {...settingsV6(s), reservedCash: amount(data, "reserved"), otherAssets: amount(data, "assets"), rollover: data.has("rollover"), rolloverMonths: Number(value(data, "rolloverMonths")),
-            reminders: data.has("reminders"), idleLockMinutes: Number(value(data, "idleMinutes"))}}}));}}>
+            reminders: data.has("reminders")}}}));}}>
         <fieldset disabled={busy}><div className="filter-row"><Select name="mode" label="Reporting calendar" initial={field(row(ledger.settings.reportingPeriod), "mode") || "calendar"}
           options={[{id: "calendar", name: "Calendar month"}, {id: "salary", name: "Salary cycle"}]} />
           <Input name="day" label="Salary / period start day" type="number" min={1} max={31} initial={Number(row(ledger.settings.reportingPeriod).day) || Number(row(ledger.settings.salary).day) || 1} />
           <Input name="reserved" label="Cash buffer ₹" initial={Number(cfg.reservedCash) || 0} />
           <Input name="assets" label="Additional owned assets ₹" initial={Number(cfg.otherAssets) || 0} />
-          <Input name="rolloverMonths" label="Rollover lookback months" type="number" min={1} max={60} initial={Number(cfg.rolloverMonths) || 12} />
-          <Select name="idleMinutes" label="Lock after inactivity" initial={String(cfg.idleLockMinutes || 0)} options={[{id:"0",name:"Off"},{id:"5",name:"5 minutes"},{id:"15",name:"15 minutes"},{id:"30",name:"30 minutes"},{id:"60",name:"60 minutes"}]} /></div>
+          <Input name="rolloverMonths" label="Rollover lookback months" type="number" min={1} max={60} initial={Number(cfg.rolloverMonths) || 12} /></div>
           <Check name="rollover" label="Carry unused budget between periods" initial={cfg.rollover === true} />
           <Check name="reminders" label="Show due reminders in the workspace" initial={cfg.reminders !== false} />
-          <p className="muted">Auto-lock discards unsaved form edits and requires your vault passphrase to resume.</p>
           <button className="primary">Save preferences</button></fieldset></form>
       <div className="button-row section-gap"><button disabled={busy} onClick={async () => {
         try {

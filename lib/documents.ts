@@ -1,4 +1,4 @@
-import {csvEncode, csvParse, parseStatement, statementMatches, type Staged, type StatementColumns} from "./files.ts";
+import {csvEncode, csvParse, inferStatementDateOrder, reviewStatement, statementColumns, statementMatches, type Staged, type StatementColumns} from "./files.ts";
 import {field, minor, row, rows, type Ledger} from "./ledger.ts";
 
 export type DocumentKind = "Statement" | "Tax evidence" | "Policy" | "Portfolio";
@@ -7,16 +7,30 @@ export type ExtractedDocument = {id: string; name: string; kind: DocumentKind; p
 
 export function statementCsvFromText(pages: string[]) {
   const lines = pages.flatMap(page => page.split("\n"));
-  if (!lines.some(line => /date/i.test(line) && /description|narration|particulars|transaction details/i.test(line) && /amount/i.test(line))) return "";
-  const table: string[][] = [["Date","Description","Amount","Direction"]];
-  const date = /^(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2})|\d{1,2}[ -][A-Za-z]{3,9}[ -]\d{4})\s/;
+  const header = lines.find(line => /date/i.test(line) && /description|narration|particulars|transaction details/i.test(line) &&
+    (/amount/i.test(line) || /(?:debit|withdrawal).*(?:credit|deposit)/i.test(line)));
+  if (!header) return "";
+  const columns = /(?:debit|withdrawal).*(?:credit|deposit)/i.test(header);
+  const table: string[][] = [columns ? ["Date","Description","Debit","Credit"] : ["Date","Description","Amount","Direction"]];
+  const date = /^(\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})|\d{1,2}[ -][A-Za-z]{3,9}[ -](?:\d{4}|\d{2}))\s/;
+  const columnAmount = /^(?:[₹\s]*[\d,]+(?:\.\d{1,2})?|[-—])$/;
   for (const source of lines) {
     const line = source.trim();
     const prefix = date.exec(line);
     if (!prefix) continue;
-    const parsed = /^(.+?)\s+₹?([\d,]+(?:\.\d{1,2})?)\s*(DR|CR|DEBIT|CREDIT)\.?\s*(?:₹?[\d,]+(?:\.\d{1,2})?)?$/i.exec(line.slice(prefix[0].length));
-    if (!parsed) return "";
-    table.push([prefix[1],parsed[1],parsed[2],parsed[3]]);
+    const body = line.slice(prefix[0].length).trimStart();
+    if (columns) {
+      const fields = body.split(/\t+| {2,}/).map(cell => cell.trim());
+      const trailing = /balance/i.test(header) ? 3 : 2;
+      const amounts = fields.splice(-trailing);
+      if (!fields.length || amounts.length !== trailing || !amounts.slice(0,2).every(cell => columnAmount.test(cell))) return "";
+      table.push([prefix[1],fields.join(" "),...amounts.slice(0,2).map(cell => /^[-—]$/.test(cell) ? "" : cell)]);
+    } else {
+      const after = /^(.+?)\s+(?:(?:INR|Rs\.?)\s*|₹\s*)?([\d,]+(?:\.\d{1,2})?)\s*(DR|CR|DEBIT|CREDIT)\.?\s*(?:₹?[\d,]+(?:\.\d{1,2})?)?$/i.exec(body);
+      const before = /^(.+?)\s+(DR|CR|DEBIT|CREDIT)\.?\s*(?:(?:INR|Rs\.?)\s*|₹\s*)?([\d,]+(?:\.\d{1,2})?)$/i.exec(body);
+      if (!after && !before) return "";
+      table.push(after ? [prefix[1],after[1],after[2],after[3]] : [prefix[1],before![1],before![3],before![2]]);
+    }
   }
   return table.length > 1 ? csvEncode(table) : "";
 }
@@ -60,15 +74,21 @@ export function verifiedStatement(text: string, opening: number, closing: number
 }
 
 export function statementDraft(ledger: Ledger, text: string, accountId: string, asOf: string,
-  verification?: {opening: number; closing: number}, mapping?: ExtractedDocument["statementMapping"]) {
-  const entries = parseStatement(text, ledger, accountId, asOf, mapping?.dateOrder, mapping);
+  verification?: {opening: number; closing: number}, mapping?: ExtractedDocument["statementMapping"], reportIssues?: (issues: string[]) => void) {
+  const {table, columns} = statementColumns(text);
+  if (!mapping && columns.amount >= 0 && columns.direction < 0 && columns.debit < 0 && columns.credit < 0 &&
+      !table.every(line => /(?:cr|dr)\.?$/i.test(line[columns.amount]?.trim() ?? "")))
+    throw Error("This statement needs a sign convention. Open Reconciliation to map positive and negative amounts.");
+  const {entries, issues} = reviewStatement(text, ledger, accountId, asOf, mapping?.dateOrder ?? inferStatementDateOrder(table, columns.date), mapping);
+  if (issues.length && (!reportIssues || !entries.length)) throw Error(issues[0]);
+  if (reportIssues) reportIssues(issues);
   const account = ledger.accounts.find(a => a.id === accountId);
   const automation = row(row(ledger.settings.statementAutomation)[accountId]);
-  const canPost = Boolean(!mapping && automation.enabled && account?.type === "bank" && verification &&
+  const canPost = Boolean(!issues.length && !mapping && automation.enabled && account?.type === "bank" && verification &&
     verifiedStatement(text, verification.opening, verification.closing, entries));
   return entries.map(line => {
     const description = merchantKey(line.entry.note);
-    const matches = statementMatches(ledger, line).filter(t => merchantKey(t.note) === description);
+    const matches = statementMatches(ledger, line).filter(t => t.date === line.entry.date && merchantKey(t.note) === description);
     const rule = rows(automation.rules).find(r => field(r, "note") === description && r.type === line.entry.type);
     const category = field(row(rule), "category");
     const allowed = line.entry.type === "income" ? ledger.categories.income : ledger.categories.expense;
@@ -95,7 +115,23 @@ export async function readPdf(bytes: ArrayBuffer, password: (incorrect: boolean)
     for (let number = 1; number <= document.numPages; number++) {
       const page = await document.getPage(number);
       const content = await page.getTextContent();
-      const text = content.items.map(item => "str" in item ? item.str + (item.hasEOL ? "\n" : " ") : "").join("").trim();
+      let previous: {end:number; y:number; height:number; eol:boolean} | undefined;
+      const parts: string[] = [];
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        if (!item.str.trim()) {
+          if (item.hasEOL && previous) previous.eol = true;
+          continue;
+        }
+        const x = item.transform[4], y = item.transform[5];
+        if (previous) {
+          const gap = x - previous.end;
+          parts.push(previous.eol || Math.abs(y - previous.y) > 2 ? "\n" : gap > Math.max(6, previous.height * .68) ? "\t" : " ");
+        }
+        parts.push(item.str);
+        previous = {end:x + item.width, y, height:item.height, eol:item.hasEOL};
+      }
+      const text = parts.join("").trim();
       size += text.length;
       if (size > 750_000) throw Error("Split this PDF into smaller files.");
       pages.push(text);

@@ -4,7 +4,12 @@ const availableModels = [
   {id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", provider: "Vertex AI", levels: ["minimal", "low", "medium", "high"], fallback: "low"},
   {id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", provider: "Vertex AI", levels: ["low", "medium", "high", "xhigh"], fallback: "low"},
   {id: "gemini-4-carbon", label: "Gemini 4 Carbon", provider: "Vertex AI", levels: ["low", "medium", "high"], fallback: "low"},
-  {id: "gpt-6.1-terra", label: "GPT-6.1 Terra", provider: "Vertex AI private preview", levels: [], fallback: "", unavailable: "Requires a verified private-preview adapter. Direct OpenAI is disabled."}
+  {id: "gpt-6-luna", label: "GPT-6 Luna", provider: "OpenAI via Google Model Garden", levels: ["low", "medium", "high"],
+    fallback: "low", endpoint: "global", unavailable: "Google Cloud private preview. Requires project capacity."},
+  {id: "gpt-6.1-terra", label: "GPT-6.1 Terra", provider: "OpenAI via Google Model Garden", levels: ["low", "medium", "high"],
+    fallback: "low", endpoint: "global", unavailable: "Google Cloud private preview. Requires project capacity."},
+  {id: "gpt-oss-120b-maas", label: "GPT-OSS 120B", provider: "OpenAI via Google Model Garden", levels: ["low", "medium", "high"],
+    fallback: "low", endpoint: "global", processing: "United States"}
 ];
 const ref = /^[a-z][a-z0-9-]{0,65}$/;
 const requestId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -14,12 +19,12 @@ const knownFields = new Set(["income", "spending", "savings", "liquidBalance", "
 const regions = /^[a-z0-9-]{1,45}$/;
 
 export function assistantCatalog(config) {
-  return availableModels.map(({id, label, provider, levels, fallback, unavailable}) => {
+  return availableModels.map(({id, label, provider, levels, fallback, endpoint, processing, unavailable}) => {
     const spec = Object.hasOwn(config, id) ? config[id] : null;
-    const enabled = Boolean(!unavailable && spec && typeof spec.location === "string" && regions.test(spec.location) &&
+    const enabled = Boolean(spec && typeof spec.location === "string" && regions.test(spec.location) && (!endpoint || spec.location === endpoint) &&
       [spec.input, spec.output].every(value => Number.isFinite(value) && value > 0));
-    return {id, label, provider, levels, fallback, enabled, unavailable: enabled ? undefined : unavailable || "Not enabled in this GCP deployment.",
-      ...(enabled ? {input: spec.input, output: spec.output, location: spec.location, pricingDate: spec.pricingDate || ""} : {})};
+    return {id, label, provider, levels, fallback, enabled, unavailable: enabled ? undefined : unavailable ?? "Not enabled in this deployment.",
+      ...(enabled ? {input: spec.input, output: spec.output, location: spec.location, processing, pricingDate: spec.pricingDate || ""} : {})};
   });
 }
 
@@ -112,7 +117,7 @@ export function registerAssistant(app, owner, {catalog, usage, invoke, research}
   if (research) app.post("/v1/ai/policy", {onRequest: owner, bodyLimit: 1200}, async (request, reply) => {
     const {id, insurer, product, uin} = request.body ?? {};
     const phrase = /^[\p{L}\p{N} .,&()’'/-]{2,100}$/u;
-    const model = catalog.find(item => item.id === research.model && item.enabled);
+    const model = catalog.find(item => item.id === research.model && item.enabled && item.provider === "Vertex AI");
     if (!model) return reply.code(503).send({error: "The policy research model is unavailable."});
     if (typeof id !== "string" || !requestId.test(id) || [insurer, product].some(value => typeof value !== "string" || !phrase.test(value) || /\d{7}/.test(value)) ||
         typeof uin !== "string" || (uin && !/^\d{3}[A-Z]\d{3}V\d{2}\d{4}$/i.test(uin)))

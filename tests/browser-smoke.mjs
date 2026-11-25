@@ -104,6 +104,14 @@ async function main() {
   await send("Emulation.setDeviceMetricsOverride", {width:1440,height:900,deviceScaleFactor:1,mobile:false});
   await send("Page.navigate", {url: origin});
   await until("!!document.querySelector('[name=confirm]')");
+  assert.equal(await evaluate("document.querySelector('.atlas-welcome h1').textContent"), "Create a workspace");
+  if (process.env.ATLAS_SCREENSHOT_LOGIN) {
+    const shot = await send("Page.captureScreenshot", {format:"png"});
+    writeFileSync(process.env.ATLAS_SCREENSHOT_LOGIN, Buffer.from(shot.data, "base64"));
+  }
+  await click("Show passphrase");
+  assert.equal(await evaluate("document.querySelector('[name=passphrase]').type"), "text");
+  await click("Hide passphrase");
   await set("[name=passphrase]", "only-fictional-test-secret-123");
   await set("[name=confirm]", "only-fictional-test-secret-123");
   await submit();
@@ -114,7 +122,13 @@ async function main() {
   await until("!document.querySelector('.period-popover')");
   assert.equal(await evaluate("Boolean(document.querySelector('.profile-menu'))"), false);
   await click("Settings");
+  if (process.env.ATLAS_SCREENSHOT_SETTINGS) {
+    await until("!!document.querySelector('.atlas-preference-body')");
+    const shot = await send("Page.captureScreenshot", {format:"png"});
+    writeFileSync(process.env.ATLAS_SCREENSHOT_SETTINGS, Buffer.from(shot.data, "base64"));
+  }
   await click("Data, backup & security");
+  await evaluate("document.querySelector('.atlas-legacy-settings summary').click()");
   const sampleDate = new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit"}).format(new Date());
   const sample = {state: {
     app: "Finance Atlas", version: 1,
@@ -142,13 +156,19 @@ async function main() {
     sampleExtension: {preserve: true}
   }};
   await evaluate("(() => { const d = new DataTransfer(); d.items.add(new File([" + JSON.stringify(JSON.stringify(sample)) +
-    "], 'test.json', {type:'application/json'})); const input=document.querySelector('[type=file]');input.files=d.files;input.dispatchEvent(new Event('change',{bubbles:true})); })()");
+    "], 'test.json', {type:'application/json'})); const input=document.querySelector('[name=localBackup]');input.files=d.files;input.dispatchEvent(new Event('change',{bubbles:true})); })()");
   await until("document.body.innerText.includes('Ready to import')");
   await click("Replace local workspace");
   await until("document.body.innerText.includes('Saved to this device')");
   await click("Dashboard");
   await click("Open Assistant");
   await until("document.querySelector('[role=dialog]')?.innerText.includes('Dashboard')");
+  assert.equal(await evaluate("(() => {const dialog=document.querySelector('[role=dialog]');const send=dialog.querySelector('[aria-label=\"Send question\"]');return dialog.getBoundingClientRect().top >= 0 && send.getBoundingClientRect().bottom <= innerHeight && document.querySelector('aside nav').offsetWidth === document.querySelector('aside nav').clientWidth;})()"), true);
+  await click("Choose AI model");
+  await until("!!document.querySelector('[name=assistantModel]') && document.querySelector('[name=assistantModel]').getBoundingClientRect().height > 0");
+  await key("Escape", "Escape", 27);
+  await until("!document.querySelector('[name=assistantModel]') || document.querySelector('[name=assistantModel]').getBoundingClientRect().height === 0");
+  assert.equal(await evaluate("Boolean(document.querySelector('[role=dialog]'))"), true);
   await key("Escape", "Escape", 27);
   await until("!document.querySelector('[role=dialog]')");
   await until("document.activeElement?.getAttribute('aria-label') === 'Open Assistant'");
@@ -204,7 +224,7 @@ async function main() {
   assert.match(await evaluate("document.querySelector('table tbody').innerText"), /32\.75.*47\.25/s);
   assert.deepEqual(await evaluate("Object.keys(localStorage)"), ["atlas-appearance"], "Only the nonfinancial theme preference is stored outside the encrypted vault.");
   await send("Page.reload");
-  await until("document.querySelector('h2')?.textContent === 'Unlock your workspace'");
+  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   await set("[name=passphrase]", "wrong-passphrase");
   await submit();
   await until("document.body.innerText.includes('Could not unlock')");
@@ -287,7 +307,7 @@ async function main() {
   await click("Lock workspace");
   await until("!!document.querySelector('[name=passphrase]')");
   await evaluate("window.__finishAttachment();File.prototype.arrayBuffer=window.__originalFileRead;new Promise(resolve=>setTimeout(resolve,100))");
-  assert.equal(await evaluate("document.querySelector('h2')?.textContent"), "Unlock your workspace");
+  assert.equal(await evaluate("document.querySelector('.atlas-welcome h1')?.textContent"), "Unlock your workspace");
   await set("[name=passphrase]", "only-fictional-test-secret-123");
   await submit();
   await until("document.querySelector('h1')?.textContent === 'Dashboard'");
@@ -325,6 +345,11 @@ async function main() {
     if (width === 390) {
       assert.equal(await evaluate("getComputedStyle(document.querySelector('.assistant-floating')).position"), "fixed");
       assert.equal(await evaluate("document.querySelector('main').getBoundingClientRect().bottom < document.querySelector('.assistant-floating').getBoundingClientRect().top"), true);
+      await click("Open Assistant");
+      await until("!!document.querySelector('[role=dialog] .assistant-composer')");
+      assert.equal(await evaluate("(() => {const box=document.querySelector('[role=dialog]').getBoundingClientRect(), send=document.querySelector('[aria-label=\"Send question\"]').getBoundingClientRect();return box.top>=0 && box.left>=0 && box.right<=innerWidth && send.bottom<=innerHeight;})()"), true);
+      await click("Close Assistant");
+      await until("!document.querySelector('[role=dialog]')");
       await evaluate("document.querySelector('[aria-label=\"Open navigation\"]').focus()");
       await key("Enter", "Enter", 13);
       await until("document.activeElement.textContent === 'Close navigation' && document.querySelector('main').inert");
@@ -402,7 +427,7 @@ async function main() {
   await click("Collapse sidebar");
   await until("document.querySelector('.workspace').dataset.collapsed === 'true'");
   await send("Page.reload");
-  await until("document.querySelector('h2')?.textContent === 'Unlock your workspace'");
+  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   assert.equal(await evaluate("document.documentElement.dataset.theme"), "dark", "Lock screen retains the theme");
   await set("[name=passphrase]", "only-fictional-test-secret-123");
   await submit();
@@ -447,12 +472,12 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('[name=amount]').value"), "1234.50");
   assert.equal(await evaluate("document.querySelector('.settings-disclosure textarea').value"), "");
   await click("Settings");
-  await click("Finance & automation");
+  await click("Data, backup & security");
   await set("[name=idleMinutes]", "5");
-  await click("Save preferences");
-  await until("!document.querySelector('fieldset:disabled')");
+  await click("Save vault preferences");
+  await until("document.querySelector('.atlas-preference-notice')?.textContent.includes('Saved to this device')");
   await evaluate("window.__realNow = Date.now; Date.now = () => window.__realNow() + 360001; document.dispatchEvent(new Event('visibilitychange'))");
-  await until("document.querySelector('h2')?.textContent === 'Unlock your workspace'");
+  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   await evaluate("Date.now = window.__realNow");
   await set("[name=passphrase]", "only-fictional-test-secret-123");
   await submit();
@@ -482,13 +507,14 @@ async function main() {
   await until("document.querySelector('[name=statementAccount]')?.value === 'card'");
   await evaluate(`(() => {
     const data = new DataTransfer();
-    data.items.add(new File([${JSON.stringify("Date,Description,Debit,Credit\n" + sampleDate + ",Synthetic card purchase,123.45,\n" + sampleDate + ",Card payment,,90")}], 'card.csv'));
+    data.items.add(new File([${JSON.stringify("Date,Description,Debit,Credit\n" + sampleDate + ",Synthetic card purchase,123.45,\n" + sampleDate + ",Card payment,,90\n" + sampleDate + ",Unreadable amount,abc,")}], 'card.csv'));
     const input = document.querySelector('[name=statementFile]');
     input.files = data.files;
     input.dispatchEvent(new Event('change', {bubbles:true}));
   })()`);
   await until("document.querySelector('legend')?.textContent === 'card.csv'");
-  await click("Preview transactions");
+  await until("!!document.querySelector('[aria-label=\"Include row 2\"]')");
+  assert.match(await evaluate("document.querySelector('.statement-row-issues summary').textContent"), /1 row was skipped/);
   assert.equal(await evaluate("document.querySelector('[aria-label=\"Include row 2\"]').checked"), false);
   await click("Import reviewed statement");
   await until("document.body.innerText.includes('1 row imported or matched')");

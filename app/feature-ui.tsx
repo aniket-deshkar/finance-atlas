@@ -26,11 +26,11 @@ export function Input({name, label, initial = "", type = "text", required = true
 }) {
   return <label>{label}<input name={name} type={type} defaultValue={initial} required={required} {...props} /></label>;
 }
-export function Select({name, label, initial = "", options, required = true}: {
-  name: string; label: string; initial?: string | number; options: {id: string; name: string}[]; required?: boolean
+export function Select({name, label, initial = "", options, required = true, placeholder}: {
+  name: string; label: string; initial?: string | number; options: {id: string; name: string}[]; required?: boolean; placeholder?: string
 }) {
   return <label>{label}<select name={name} defaultValue={initial} required={required}>
-    <option value="">{required ? "Choose…" : "None"}</option>{options.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
+    <option value="">{placeholder ?? (required ? "Choose…" : "None")}</option>{options.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
   </select></label>;
 }
 export function Check({name, label, initial = false}: {name: string; label: string; initial?: boolean}) {

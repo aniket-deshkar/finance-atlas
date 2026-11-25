@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from "react";
-import {base64, download, importStatement, type Staged} from "../lib/files";
+import {base64, decodeStatementFile, download, importStatement, type Staged} from "../lib/files";
 import {merchantKey, readPdf, rowKey, statementCsvFromText, statementDraft, type DocumentKind, type ExtractedDocument} from "../lib/documents";
 import {field, minor, money, row, rows} from "../lib/ledger";
 import {deviceRecord} from "../lib/vault";
@@ -9,7 +9,7 @@ type Batch = ExtractedDocument & {staged?: Staged[]; outcomes?: Record<string, s
 type PasswordRequest = {name: string; wrong: boolean; resolve: (password: string) => void; reject: () => void};
 const kinds: DocumentKind[] = ["Statement", "Tax evidence", "Policy", "Portfolio"];
 const statementText = (item: ExtractedDocument) => item.kind !== "Statement" ? "" :
-  /\.csv$/i.test(item.name) ? item.pages[0] : /\.pdf$/i.test(item.name) ? statementCsvFromText(item.pages) : "";
+  /\.(csv|tsv)$/i.test(item.name) ? item.pages[0] : /\.pdf$/i.test(item.name) ? statementCsvFromText(item.pages) : "";
 
 export async function saveDocumentIndex(scope: string, key: CryptoKey, batch: Batch) {
   const commit = async () => {
@@ -96,7 +96,7 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
     for (const file of files) {
       if (!alive.current) break;
       try {
-        if (file.size > 12_000_000 || !/\.(csv|pdf|txt)$/i.test(file.name)) throw Error("Choose a CSV, TXT or PDF up to 12 MB.");
+        if (file.size > 12_000_000 || !/\.(csv|tsv|pdf|txt)$/i.test(file.name)) throw Error("Choose a CSV, TSV, TXT or PDF up to 12 MB.");
         const bytes = await file.arrayBuffer();
         const id = await documentDigest(bytes);
         const previous = indexRef.current.find(item => item.id === id);
@@ -108,14 +108,16 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
           const request = {name: file.name, wrong, resolve, reject: () => reject(Error("Document skipped."))};
           pending.current = request;
           setPassword(request);
-        })) : [await file.text()];
+        })) : [decodeStatementFile(bytes)];
         if (!alive.current) break;
         if (pages.reduce((size, page) => size + page.length, 0) > 750_000) throw Error("Split this document into smaller files.");
         const record = {id, name:file.name,kind,pages,date:asOf,accountId:account};
         const csv = statementText(record);
         let staged: Staged[] | undefined;
         if (kind === "Statement" && csv && account) {
-          try {staged = statementDraft(ledger, csv, account, asOf);}
+          try {staged = statementDraft(ledger, csv, account, asOf, undefined, undefined, issues => {
+            if (issues.length) results.push(file.name + " · " + issues.length + (issues.length === 1 ? " row needs" : " rows need") + " correction. " + issues[0]);
+          });}
           catch (error) {results.push(error instanceof Error ? error.message : "Review the statement format.");}
         }
         await deviceRecord(scope, "original-" + id, vaultKey, base64(new Uint8Array(bytes)));
@@ -136,9 +138,12 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
       const amounts = (value: string) => /^-?\d+(\.\d{1,2})?$/.test(value.trim()) ? minor(Number(value)) : NaN;
       const verification = opening && closing ? {opening: amounts(opening), closing: amounts(closing)} : undefined;
       let final = batch;
+      let issues: string[] = [];
       const saved = await save(current => {
         const csv = statementText(batch);
-        const draft = statementDraft(current, csv, target, asOf, mode === "auto" ? verification : undefined, batch.statementMapping);
+        const draft = statementDraft(current, csv, target, asOf, mode === "auto" ? verification : undefined, batch.statementMapping,
+          problems => {issues = problems;});
+        if (mode === "auto" && issues.length) throw Error("Automatic posting is paused because some rows could not be read. Review the valid rows separately.");
         const outcomes = {...batch.outcomes};
         const existing = new Set(current.transactions.map(entry => field(entry, "importRowKey")).filter(Boolean));
         const entries = draft.filter(line => !existing.has(rowKey(line)) && !outcomes[rowKey(line)]).map(line => {
@@ -151,7 +156,11 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
         if (!entries.some(line => line.selected || line.match)) return current;
         return importStatement(current, entries, batch.name, "", asOf, false);
       }, true);
-      if (saved) {await persist(final);setApproved([]);setMessage("Reconciliation finished. Review any unmatched rows below.");}
+      if (saved) {
+        await persist(final);setApproved([]);
+        setMessage(issues.length ? "Reconciliation finished for the reviewed rows. " + issues.length + " unreadable rows were excluded." :
+          "Reconciliation finished. Review any unmatched rows below.");
+      }
     } catch (error) {setMessage(error instanceof Error ? error.message : "Could not reconcile this statement.");}
     finally {setWorking(false);}
   }
@@ -166,7 +175,7 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
       {kinds.map(value => <option key={value}>{value}</option>)}</select></label>
       {kind === "Statement" && <label>Statement account<select value={account} onChange={event => setAccount(event.target.value)}>
         <option value="">Choose account</option>{ledger.accounts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select></label>}
-      <label>Add files<input aria-label="Add financial documents" type="file" accept=".pdf,.csv,.txt" multiple disabled={working || busy}
+      <label>Add files<input aria-label="Add financial documents" type="file" accept=".pdf,.csv,.tsv,.txt" multiple disabled={working || busy}
         onChange={event => {const files = Array.from(event.target.files ?? []);event.target.value = "";if (files.length) void upload(files);}} /></label></div>
     {password && <form key={password.name + password.wrong} onSubmit={event => {
       event.preventDefault();const form = event.currentTarget;

@@ -9,11 +9,11 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
-from assistant import Chat, run_specialist
+from assistant import Chat, MODEL_GARDEN_OPENAI, OPENAI_PREVIEW_MODELS, run_specialist
 from runtime import ModelResponseError
 
 
-MODELS = ("gemini-3.1-flash-lite", "gemini-4-hydrogen", "gemini-4-carbon")
+MODELS = ("gemini-3.1-flash-lite", "gemini-4-hydrogen", "gemini-4-carbon", MODEL_GARDEN_OPENAI, *OPENAI_PREVIEW_MODELS)
 OVERVIEW = {"ref": "overview", "start": "2026-11-01", "end": "2026-11-30", "values": {"savings": 2_400_000}}
 CANARY = "FICTIONAL-UNRELATED-MESSAGE-907"
 CASES = (
@@ -50,7 +50,7 @@ async def evaluate(model, case):
             checks["omits_unrelated_history"] = case["forbidden"].casefold() not in answer.answer.casefold()
     except Exception as problem:
         checks, usage = {"structured_response": False}, None
-        code = getattr(problem, "code", None)
+        code = getattr(problem, "code", None) or getattr(getattr(problem, "response", None), "status_code", None)
         status = code if isinstance(problem, ModelResponseError) or isinstance(code, int) and 400 <= code <= 599 else None
         error = {"type": type(problem).__name__, "provider_status": status}
     else:

@@ -20,6 +20,11 @@ The workspace SHALL require the local vault passphrase to unlock an existing led
 - **WHEN** the user activates the lock action
 - **THEN** the workspace returns to the unlock view and stops exposing the active ledger
 
+#### Scenario: Connect a Google account on a new device
+
+- **WHEN** the user connects through the welcome screen
+- **THEN** the workspace shows the connection status and asks for the existing cloud vault passphrase or a new local vault passphrase
+
 ### Requirement: Reporting and navigation
 
 The workspace SHALL show period context and provide navigation between the dashboard and the detailed finance screens.
@@ -38,3 +43,9 @@ The workspace SHALL adapt its navigation and layout to the available width and s
 
 - **WHEN** a user opens the workspace at a narrow mobile width
 - **THEN** the workspace exposes navigation through its drawer and keeps search available
+
+#### Scenario: Manage security settings
+
+- **WHEN** the user opens Data & security in Settings
+- **THEN** the settings show the inactivity lock, encrypted backups and recovery together
+- **AND** the legacy plain ledger tools remain available in their own disclosure

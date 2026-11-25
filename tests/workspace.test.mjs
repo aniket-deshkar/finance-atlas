@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {blank, addAccount} from "../lib/ledger.ts";
 import {estimateTax, portfolio, putFinancialRecord, vehicleCosts} from "../lib/assets.ts";
 import {statementDraft, verifiedStatement, documentHints, statementCsvFromText} from "../lib/documents.ts";
-import {importStatement, parseStatement, statementColumns} from "../lib/files.ts";
+import {decodeStatementFile, importStatement, inferStatementDateOrder, parseStatement, reviewStatement, statementColumns, statementMatches} from "../lib/files.ts";
 import {assistantFact, localAnswer} from "../lib/assistant.ts";
 
 const date = "2026-11-04";
@@ -64,6 +64,39 @@ test("a recorded movement can match only one row per statement account", () => {
   const duplicatedMatch = preview.map(line => ({...line,match:"recorded",selected:false}));
   assert.throws(() => importStatement(ledger, duplicatedMatch, "bank.csv", "", date, false), /same recorded entry/);
   assert.equal(ledger.transactions.length, 1);
+});
+
+test("statement review detects a preamble, encoding and date order while surfacing bad rows", () => {
+  const value = "\uFEFFAccount activity\nPeriod to Nov 2026\nDate;Narration;Withdrawal Amount;Deposit Amount\n10/30/2026;Bakery;12;\n11/03/2026;Groceries;;abc\n11/04/2026;Return;;5\nTotal;;12;5";
+  const text = decodeStatementFile(Uint8Array.from(Buffer.from(value, "utf16le")).buffer);
+  const {table, columns} = statementColumns(text);
+  assert.equal(inferStatementDateOrder(table, columns.date), "month-first");
+  const checked = reviewStatement(text, empty(), "bank", date, "month-first");
+  assert.deepEqual(checked.entries.map(line => [line.entry.date,line.signed]), [["2026-10-30",-1200],["2026-11-04",500]]);
+  assert.equal(checked.issues.length,1);
+  assert.match(checked.issues[0], /row 5/);
+  assert.throws(() => parseStatement(text, empty(), "bank", date, "month-first"), /monetary amounts/);
+});
+
+test("text PDF debit and credit columns need explicit values in both positions", () => {
+  const text = statementCsvFromText(["Date  Narration  Debit  Credit  Balance\n02-Nov-26\tCafe\t250.00\t-\t500.00\n04-Nov-26\tReturn\t-\t55.00\t555.00"]);
+  assert.deepEqual(parseStatement(text, empty(), "bank", date).map(line => line.signed), [-25000,5500]);
+  assert.equal(statementCsvFromText(["Date Narration Debit Credit Balance\n02-Nov-26\tCafe\t250.00\t500.00"]), "");
+});
+
+test("next-day postings require explicit matching and cannot be imported twice under a different type", () => {
+  const ledger = empty();
+  const text = "Date,Description,Debit,Credit\n2026-11-03,Bakery,12,";
+  const line = parseStatement(text, ledger, "bank", date)[0];
+  const recorded = {...line.entry,id:"posted",date:"2026-11-04",importRowKey:"previously-imported-row"};
+  ledger.transactions.push(recorded);
+  const review = parseStatement(text, ledger, "bank", date)[0];
+  assert.equal(review.match,"");
+  assert.equal(review.selected,false);
+  assert.deepEqual(statementMatches(ledger, review).map(entry => entry.id), ["posted"]);
+  assert.equal(importStatement(ledger,[{...review,match:"posted"}],"bank.csv","",date,false).transactions.length,1);
+  assert.throws(() => importStatement(ledger,[{...line,entry:{...line.entry,importRowKey:"previously-imported-row"}}],
+    "bank.csv","",date,false), /already been imported/);
 });
 
 test("portfolio sale updates cost basis without repricing earlier holdings; vehicle costs use unique linked entries", () => {

@@ -10,7 +10,7 @@ export function csvEncode(table: unknown[][]) {
   }).join(",")).join("\r\n");
 }
 
-export function csvParse(text: string): string[][] {
+export function csvParse(text: string, delimiter: "," | ";" | "\t" = ","): string[][] {
   if (text.length > 3_000_000) throw new Error("Choose a statement CSV smaller than 3 MB.");
   const result: string[][] = [];
   let cell = "", line: string[] = [], quoted = false, closed = false;
@@ -24,7 +24,7 @@ export function csvParse(text: string): string[][] {
     } else if (c === '"') {
       if (cell || closed) throw new Error("Malformed CSV quotes.");
       quoted = true;
-    } else if (c === ",") {line.push(cell);cell = "";closed = false;}
+    } else if (c === delimiter) {line.push(cell);cell = "";closed = false;}
     else if (c === "\n" || c === "\r") {
       if (c === "\r" && text[i + 1] === "\n") i++;
       line.push(cell); if (line.some(c => c.trim())) result.push(line);
@@ -39,20 +39,29 @@ export function csvParse(text: string): string[][] {
   return result;
 }
 
+export function decodeStatementFile(bytes: ArrayBuffer) {
+  const [a, b] = new Uint8Array(bytes, 0, Math.min(2, bytes.byteLength));
+  if (a === 0xff && b === 0xfe) return new TextDecoder("utf-16le").decode(bytes);
+  if (a === 0xfe && b === 0xff) return new TextDecoder("utf-16be").decode(bytes);
+  try { return new TextDecoder("utf-8", {fatal:true}).decode(bytes); }
+  catch { return new TextDecoder("windows-1252").decode(bytes); }
+}
+
 function bankDate(text: string, dateOrder: "day-first" | "month-first") {
   text = text.trim();
   const iso = /^(\d{4}-\d{2}-\d{2})(?:$|[ T])/.exec(text);
   if (iso && validDate(iso[1])) return iso[1];
-  const match = /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4}|\d{2})(?:$|\s)/.exec(text);
+  const match = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4}|\d{2})(?:$|\s)/.exec(text);
   if (match) {
     const year = match[3].length === 2 ? String(2000 + Number(match[3])) : match[3];
     const date = year + "-" + (dateOrder === "day-first" ? match[2] : match[1]).padStart(2, "0") + "-" + (dateOrder === "day-first" ? match[1] : match[2]).padStart(2, "0");
     if (validDate(date)) return date;
   }
-  const named = /^(\d{1,2})[\s\/-]+([A-Za-z]{3,9})[\s,\/-]+(\d{4})(?:$|\s)/.exec(text);
+  const named = /^(\d{1,2})[\s\/-]+([A-Za-z]{3,9})[\s,\/-]+(\d{4}|\d{2})(?:$|\s)/.exec(text);
   if (named) {
     const month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(named[2].slice(0, 3).toLowerCase()) + 1;
-    const date = named[3] + "-" + String(month).padStart(2, "0") + "-" + named[1].padStart(2, "0");
+    const year = named[3].length === 2 ? String(2000 + Number(named[3])) : named[3];
+    const date = year + "-" + String(month).padStart(2, "0") + "-" + named[1].padStart(2, "0");
     if (month && validDate(date)) return date;
   }
   throw new Error("Use YYYY-MM-DD, DD/MM/YYYY, DD/MM/YY or DD Mon YYYY dates.");
@@ -61,7 +70,7 @@ function numeric(text: string) {
   text = text.trim();
   if (!text || text === "-" || text === "—") return 0;
   const negative = /dr\.?$/i.test(text) || /^\(/.test(text);
-  const cleaned = text.replace(/(?:cr|dr)\.?$/i, "").replace(/[₹,\s()]/g, "");
+  const cleaned = text.replace(/(?:cr|dr)\.?$/i, "").replace(/^(?:inr|rs\.?)\s*/i, "").replace(/[₹,\s()]/g, "");
   if (!/^[+-]?(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(cleaned)) throw new Error("Review the statement's monetary amounts.");
   return negative ? -Math.abs(Number(cleaned)) : Number(cleaned);
 }
@@ -74,21 +83,22 @@ export function statementMovement(entry: Entry, accountId: string) {
   return entry.toId === accountId && (entry.type === "transfer" || entry.type === "cardPayment") ? minor(entry.amount) : 0;
 }
 export function statementMatches(ledger: Ledger, item: Staged) {
-  return ledger.transactions.filter(t => t.date === item.entry.date && statementMovement(t, item.statementAccountId) === item.signed);
+  return ledger.transactions.filter(t => withinPostingDay(t.date, item.entry.date) && statementMovement(t, item.statementAccountId) === item.signed)
+    .sort((a,b) => Number(b.date === item.entry.date) - Number(a.date === item.entry.date) || a.date.localeCompare(b.date));
 }
+const withinPostingDay = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) <= 86_400_000;
 
 export const statementFields = {
-  date: ["transactiondate", "txndate", "date", "valuedate", "postingdate"],
-  note: ["description", "narration", "particulars", "particular", "details", "note", "merchant", "remarks"],
-  debit: ["debit", "withdrawal", "withdrawalamt", "debitamount", "moneyout"],
-  credit: ["credit", "deposit", "depositamt", "creditamount", "moneyin"],
+  date: ["transactiondate", "txndate", "date", "postingdate", "valuedate", "bookingdate"],
+  note: ["description", "narration", "particulars", "particular", "details", "note", "merchant", "remarks", "transactiondetails"],
+  debit: ["debit", "withdrawal", "withdrawalamt", "debitamount", "moneyout", "paidout"],
+  credit: ["credit", "deposit", "depositamt", "creditamount", "moneyin", "paidin"],
   amount: ["transactionamount", "txnamount", "amount"],
   direction: ["transactiontype", "type", "direction", "drcr", "crdr"]
 } as const;
 export type StatementColumns = Record<keyof typeof statementFields, number>;
 
-export function statementColumns(text: string) {
-  const table = csvParse(text), labels = table.shift() ?? [];
+function mapStatementColumns(labels: string[]) {
   const headers = labels.map(text => text.toLowerCase().replace(/[^a-z]/g, ""));
   const col = (...names: string[]) => {
     for (const name of names) {const exact = headers.indexOf(name);if (exact >= 0) return exact;}
@@ -96,14 +106,57 @@ export function statementColumns(text: string) {
   };
   const columns = Object.fromEntries(Object.entries(statementFields).map(([name, values]) => [name, col(...values)])) as StatementColumns;
   if (columns.amount === columns.debit || columns.amount === columns.credit) columns.amount = -1;
-  return {table, labels, columns};
+  return columns;
 }
 
-export function parseStatement(text: string, ledger: Ledger, accountId: string, asOf: string,
-  dateOrder: "day-first" | "month-first" = "day-first", options?: {columns?: StatementColumns; debitPositive?: boolean}): Staged[] {
+export function statementColumns(text: string) {
+  const lines = text.split(/\r?\n/, 28).join("\n");
+  const delimiters = ([",", ";", "\t"] as const).filter(delimiter => delimiter === "," || lines.includes(delimiter));
+  let fallback: {table:string[][]; labels:string[]; columns:StatementColumns; headerRow:number} | undefined;
+  let firstError: unknown;
+  for (const delimiter of delimiters) {
+    try {
+      const parsed = csvParse(text, delimiter);
+      const headerRow = parsed.slice(0, 25).findIndex(labels => {
+        if (labels.length < 2) return false;
+        const fields = mapStatementColumns(labels);
+        return fields.date >= 0 && [fields.amount, fields.debit, fields.credit].some(index => index >= 0);
+      });
+      if (headerRow >= 0) {
+        const labels = parsed[headerRow];
+        const table = parsed.slice(headerRow + 1);
+        while (table.length && /^(?:grand total|total(?:s| debit| credit)?|end of statement)$/i.test(table.at(-1)?.[0].trim() ?? "")) table.pop();
+        return {table, labels, columns: mapStatementColumns(labels), headerRow};
+      }
+      const labels = parsed[0] ?? [];
+      if (!fallback || labels.length > fallback.labels.length)
+        fallback = {table:parsed.slice(1), labels, columns:mapStatementColumns(labels), headerRow:0};
+    } catch (error) {firstError ??= error;}
+  }
+  if (fallback) return fallback;
+  throw firstError;
+}
+
+export function inferStatementDateOrder(table: string[][], index: number) {
+  if (index < 0) return undefined;
+  let dayFirst = false, monthFirst = false;
+  for (const line of table) {
+    const match = /^(\d{1,2})[./-](\d{1,2})[./-]\d{2,4}(?:\s|$)/.exec(line[index]?.trim() ?? "");
+    if (!match) continue;
+    const a = Number(match[1]), b = Number(match[2]);
+    if (a > 12 && a <= 31 && b >= 1 && b <= 12) dayFirst = true;
+    if (b > 12 && b <= 31 && a >= 1 && a <= 12) monthFirst = true;
+  }
+  return dayFirst === monthFirst ? undefined : dayFirst ? "day-first" : "month-first";
+}
+
+type StatementOptions = {columns?: StatementColumns; debitPositive?: boolean};
+
+export function reviewStatement(text: string, ledger: Ledger, accountId: string, asOf: string,
+  dateOrder: "day-first" | "month-first" = "day-first", options?: StatementOptions) {
   const account = ledger.accounts.find(a => a.id === accountId);
   if (!account) throw new Error("Choose an account first.");
-  const {table, columns, labels} = statementColumns(text);
+  const {table, columns, labels, headerRow} = statementColumns(text);
   const {date, note, debit, credit, amount, direction} = options?.columns ?? columns;
   const selectedColumns = [date, note, debit, credit, amount, direction].filter(index => index >= 0);
   if (selectedColumns.some(index => !Number.isInteger(index) || index >= labels.length) || new Set(selectedColumns).size !== selectedColumns.length)
@@ -127,7 +180,8 @@ export function parseStatement(text: string, ledger: Ledger, accountId: string, 
     }
   }
   const seen = new Set<string>();
-  return table.map((line, i) => {
+  const entries: Staged[] = [], issues: string[] = [];
+  for (const [i, line] of table.entries()) {
     try {
       const posted = bankDate(line[date] ?? "", dateOrder);
       if (posted < account.openingDate || posted > asOf) throw new Error("The date must be within the account's recorded history.");
@@ -157,25 +211,34 @@ export function parseStatement(text: string, ledger: Ledger, accountId: string, 
       if (seen.has(key)) throw new Error("The file contains a duplicate transaction. Review it before importing.");
       seen.add(key);
       const signedAmount = minor(entry.amount) * (incoming ? 1 : -1);
-      const possible = (byMovement.get(signedAmount) ?? []).filter(t => Math.abs(Date.parse(t.date) - Date.parse(entry.date)) <= 86400000);
+      const possible = (byMovement.get(signedAmount) ?? []).filter(t => withinPostingDay(t.date, entry.date));
       const sameDescription = possible.filter(t => t.date === entry.date && normalizeDescription(t.note) === normalizeDescription(entry.note));
       const match = sameDescription.length === 1 ? sameDescription[0].id : "";
       const needsClassification = /\b(?:neft|imps|rtgs|self transfer|funds? transfer|card payment|payment received|payment thank you|card repayment|card settlement)\b/i.test(entry.note ?? "");
-      return {entry, match, possible: !match && (possible.length || needsClassification) ? possible.length === 1 ? possible[0].id : "review" : "",
-        selected: !match && possible.length === 0 && !needsClassification, statementAccountId: accountId, signed: signedAmount};
-    } catch (error) {throw new Error("CSV row " + (i + 2) + " · " + (error instanceof Error ? error.message : "Invalid row."));}
-  });
+      entries.push({entry, match, possible: !match && (possible.length || needsClassification) ? possible.length === 1 ? possible[0].id : "review" : "",
+        selected: !match && possible.length === 0 && !needsClassification, statementAccountId: accountId, signed: signedAmount});
+    } catch (error) {issues.push("Statement row " + (i + headerRow + 2) + " · " + (error instanceof Error ? error.message : "Invalid row."));}
+  }
+  return {entries, issues};
+}
+
+export function parseStatement(text: string, ledger: Ledger, accountId: string, asOf: string,
+  dateOrder: "day-first" | "month-first" = "day-first", options?: StatementOptions) {
+  const {entries, issues} = reviewStatement(text, ledger, accountId, asOf, dateOrder, options);
+  if (issues.length) throw new Error(issues[0]);
+  return entries;
 }
 
 export function importStatement(ledger: Ledger, staged: Staged[], filename: string, text: string, asOf: string, archive = true): Ledger {
   let next = structuredClone(ledger);
   const reconciled = {...row(row(next.settings.dailyV6).reconciled)};
   const signatures = new Set(next.transactions.map(signature));
+  const importedRows = new Set(next.transactions.map(entry => field(entry, "importRowKey")).filter(Boolean));
   const matchedMovements = new Set<string>();
   for (const item of staged) {
     if (!item.selected && !item.match) continue;
     const target = item.match && next.transactions.find(t => t.id === item.match);
-    if (item.match && (!target || target.date !== item.entry.date || statementMovement(target, item.statementAccountId) !== item.signed))
+    if (item.match && (!target || !withinPostingDay(target.date, item.entry.date) || statementMovement(target, item.statementAccountId) !== item.signed))
       throw new Error("A reconciliation match changed. Review the preview.");
     if (target) {
       const movement = JSON.stringify([item.statementAccountId, target.id]);
@@ -186,8 +249,11 @@ export function importStatement(ledger: Ledger, staged: Staged[], filename: stri
     }
     if (statementMovement(item.entry, item.statementAccountId) !== item.signed) throw new Error("The classified transfer direction does not agree with the statement.");
     const key = signature(item.entry);
+    const importedKey = field(item.entry, "importRowKey");
+    if (importedKey && importedRows.has(importedKey)) throw new Error("This statement row has already been imported. Match the recorded entry or exclude the row.");
     if (signatures.has(key)) throw new Error("A matching transaction now exists. Preview the file again.");
     signatures.add(key);
+    if (importedKey) importedRows.add(importedKey);
     next.transactions.push(item.entry);
     reconciled[item.entry.id] = {at: asOf, source: filename};
   }

@@ -31,6 +31,22 @@ The workspace SHALL retain original posted entries and settled payment amounts w
 - **THEN** the workspace retains its original record and records a linked reversal
 - **AND** the corrected payment can be entered separately
 
+### Requirement: Reviewed statement import
+
+The workspace SHALL read supported delimited exports and text PDF layouts on the device. It SHALL wait for the user to approve the import before creating ledger entries.
+
+#### Scenario: A statement contains an unreadable row
+
+- **WHEN** the workspace can map the statement and some rows cannot be validated
+- **THEN** it shows the valid rows in the review and lists the skipped rows with their errors
+- **AND** the skipped rows are excluded from import
+
+#### Scenario: An existing transaction posted one day apart
+
+- **WHEN** the statement account and signed amount match an existing transaction within one day
+- **THEN** the workspace offers the transaction as a possible match
+- **AND** it leaves the row for review if the dates differ
+
 ### Requirement: Reporting period
 
 The workspace SHALL apply the configured calendar month or salary cycle when deriving period totals.

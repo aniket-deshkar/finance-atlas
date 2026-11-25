@@ -44,7 +44,7 @@ const maxSpend = Number(process.env.ATLAS_AI_MONTHLY_USD_MICROS || "5000000");
 if (!Number.isSafeInteger(maxSpend) || maxSpend < 0) throw Error("Invalid AI monthly budget.");
 const usage = createUsage(db, ownerUid, maxSpend);
 const cloudAi = process.env.ATLAS_ENABLE_AI === "true" && client;
-const analysisModel = catalog.find(model => model.enabled && model.id === process.env.ATLAS_ANALYSIS_MODEL);
+const analysisModel = catalog.find(model => model.enabled && model.provider === "Vertex AI" && model.id === process.env.ATLAS_ANALYSIS_MODEL);
 const cloud = process.env.ATLAS_SYNC_BUCKET ? createCloud({
   db, ownerUid, bucket: new Storage({projectId}).bucket(process.env.ATLAS_SYNC_BUCKET),
   mintToken: () => auth.createCustomToken(ownerUid),

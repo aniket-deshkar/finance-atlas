@@ -79,7 +79,7 @@ try {
   await until("!!document.querySelector('[name=confirm]')");
   assert.equal(await evaluate("isSecureContext && !!crypto.subtle && !!window.__TAURI_INTERNALS__"), true);
   assert.equal(await evaluate("location.hostname"), "tauri.localhost");
-  assert.equal(await evaluate("document.body.innerText.includes('FINANCE ATLAS DESKTOP')"), true);
+  await until("document.querySelector('.atlas-welcome-desktop')?.textContent.includes('Finance Atlas for Windows')");
   const blocked = await evaluate(`new Promise(resolve => {
     const handler = e => { window.removeEventListener('securitypolicyviolation', handler);resolve(e.effectiveDirective); };
     window.addEventListener('securitypolicyviolation', handler);
@@ -125,7 +125,7 @@ try {
     writeFileSync(process.env.ATLAS_DESKTOP_SCREENSHOT, Buffer.from(screenshot.data, "base64"));
   }
   await send("Page.reload");
-  await until("document.querySelector('h2')?.textContent === 'Unlock your workspace'");
+  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   assert.equal(await evaluate("document.documentElement.dataset.theme"), "dark");
   await set("[name=passphrase]", "fictional-native-check-12345");
   await evaluate("document.querySelector('form').requestSubmit()");
@@ -133,7 +133,7 @@ try {
   assert.equal(await evaluate("document.querySelector('.liquid-value').textContent.includes('12,345.67')"), true);
   await closeApp();
   await connect();
-  await until("document.querySelector('h2')?.textContent === 'Unlock your workspace'");
+  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   await set("[name=passphrase]", "fictional-native-check-12345");
   await evaluate("document.querySelector('form').requestSubmit()");
   await until("document.querySelector('h1')?.textContent === 'Dashboard'");
