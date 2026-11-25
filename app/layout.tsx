@@ -6,6 +6,7 @@ import "./polish.css";
 import "./workspace.css";
 import "./modern.css";
 import "./workflows.css";
+import "./experience.css";
 
 export const metadata: Metadata = {
   title: "Finance Atlas",

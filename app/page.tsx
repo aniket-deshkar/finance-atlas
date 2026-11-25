@@ -28,6 +28,9 @@ import { AlertReview } from "./alert-review";
 import type { AlertSuggestion } from "../lib/alert-parser";
 import {Assistant, AssistantSettings} from "./assistant";
 import {UiProvider} from "./ui-provider";
+import {Welcome} from "./welcome";
+import {SettingsLayout, type SettingsGroup} from "./settings";
+import {AccountCard, institutionOptions, networkOptions} from "./accounts";
 import {AutomationSettings, DocumentReviewCount, DocumentsView} from "./documents";
 import {InvestmentsView, PolicyResearch, TaxView, VehiclesView} from "./assets";
 
@@ -55,6 +58,8 @@ function AccountForm({ save, asOf }: { save: (command: (ledger: Ledger) => Ledge
       const account: Account = {
         id: crypto.randomUUID(), name: String(data.get("name")).trim(), type, openingDate: String(data.get("date")),
         opening: amountFromInput(String(data.get("opening"))),
+        institution: type === "cash" ? "" : value(data, "institution"),
+        network: type === "credit" ? value(data, "network") : "",
         statementDay: type === "credit" ? Number(data.get("statementDay")) : 15,
         dueDay: type === "credit" ? Number(data.get("dueDay")) : 5,
         dueOffset: type === "credit" ? Number(data.get("dueOffset")) : 1,
@@ -71,9 +76,11 @@ function AccountForm({ save, asOf }: { save: (command: (ledger: Ledger) => Ledge
     <label>Type<select name="accountType" value={type} onChange={event => setType(event.target.value as Account["type"])}>
       <option value="bank">Bank</option><option value="cash">Cash</option><option value="credit">Credit card</option>
     </select></label>
+    {type !== "cash" && <Select name="institution" label="Bank or issuer" options={institutionOptions} required={false} placeholder="Detect from account name" />}
     <label>Opening date<input name="date" type="date" required max={asOf} defaultValue={asOf} /></label>
     <label>Opening amount ₹<input name="opening" inputMode="decimal" required defaultValue="0" /></label>
     {type === "credit" && <>
+      <Select name="network" label="Card network" options={networkOptions} required={false} placeholder="Detect from card name" />
       <label>Credit limit ₹<input name="limit" type="number" min="0" step="0.01" required /></label>
       <label>Statement day<input name="statementDay" type="number" min="1" max="31" required /></label>
       <label>Payment due day<input name="dueDay" type="number" min="1" max="31" required /></label>
@@ -89,22 +96,27 @@ function TransactionForm({ ledger, save, asOf, close, busy, error, month }: Feat
   const [alert, setAlert] = useState<AlertSuggestion | null>(null);
   const [alertRevision, setAlertRevision] = useState(0);
   const [destination, setDestination] = useState(ledger.accounts.find(a => a.type === "credit")?.id || "");
+  const [sourceAccount, setSourceAccount] = useState("");
+  const [transferDestination, setTransferDestination] = useState("");
   const templates = rows(settingsV6(ledger).merchantTemplates);
   const template = templates.find(t => t.id === templateId);
   const accounts = ledger.accounts.filter(account => !["income", "transfer", "cardPayment"].includes(type) || account.type !== "credit");
+  const source = accounts.some(account => account.id === sourceAccount) ? sourceAccount : "";
+  const transferAccounts = accounts.filter(account => account.id !== source);
+  const receiving = transferAccounts.some(account => account.id === transferDestination) ? transferDestination : "";
   const categories = type === "income" ? ledger.categories.income : ledger.categories.expense;
   const statements = type === "cardPayment" ? rows(ledger.settings.cardStatements).filter(st => st.cardId === destination &&
     field(st, "statementDate") <= asOf && statementAmounts(ledger, st, asOf).due > 0) : [];
   const period = displayPeriod(ledger, month, asOf);
   return <>
     <UpcomingChooser ledger={ledger} save={save} asOf={asOf} monthEnd={period.end} busy={busy} error={error} />
-    <AlertReview useSuggestion={suggestion => {setTemplateId("");setType(suggestion.type);setAlert(suggestion);setAlertRevision(i => i + 1);}} />
+    <AlertReview useSuggestion={suggestion => {setTemplateId("");setSourceAccount("");setType(suggestion.type);setAlert(suggestion);setAlertRevision(i => i + 1);}} />
     {alert && <p className="editor-note">Verify every field before saving.{alert.accountHint && " The alert mentioned an account ending " + alert.accountHint + "."} Account, category and payment status require your review.</p>}
     <label className="upcoming-chooser">Quick entry template<select value={templateId} onChange={event => {
       const selected = templates.find(t => t.id === event.target.value);setTemplateId(event.target.value);setAlert(null);
-      if (selected) setType(field(selected, "type") as EntryKind);
+      if (selected) {setType(field(selected, "type") as EntryKind);setSourceAccount(field(selected, "accountId"));}
     }}><option value="">No template</option>{templates.map(t => <option key={field(t, "id")} value={field(t, "id")}>{field(t, "name")}</option>)}</select></label>
-    <form key={templateId + type + alertRevision} className="entry-form" onSubmit={async event => {
+    <form key={templateId + "-" + alertRevision} className="entry-form" onSubmit={async event => {
       event.preventDefault();const data = new FormData(event.currentTarget);
       if (!type) return;
       const statement = statements.find(item => item.id === data.get("statement"));
@@ -122,14 +134,15 @@ function TransactionForm({ ledger, save, asOf, close, busy, error, month }: Feat
       </select></label>
       <label>Date<input name="date" type="date" required defaultValue={alert ? alert.date : asOf} /></label>
       <label>Amount ₹<input name="amount" inputMode="decimal" defaultValue={alert?.amount || Number(template?.amount) || ""} required /></label>
-      <label>Account<select name="account" required defaultValue={field(template ?? {}, "accountId")}>
+      <label>{type === "transfer" || type === "cardPayment" ? "Pay from" : "Account"}<select name="account" required value={source} onChange={event => setSourceAccount(event.target.value)}>
         <option value="">Choose account</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-      {type === "transfer" && <label>Transfer to<select name="destination" required><option value="">Choose destination</option>
-        {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
+      {type === "transfer" && <label>Transfer to<select name="destination" required value={receiving} onChange={event => setTransferDestination(event.target.value)}><option value="">Choose destination</option>
+        {transferAccounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}
       {type === "cardPayment" && <><label>Credit card<select name="repaymentCard" required value={destination} onChange={event => setDestination(event.target.value)}>
+        <option value="">Choose credit card</option>
         {ledger.accounts.filter(a => a.type === "credit").map(card => <option key={card.id} value={card.id}>{card.name}</option>)}</select></label>
-        <label>Card statement paid<select name="statement" defaultValue=""><option value="">Prepayment / no statement link</option>
-          {statements.map(statement => <option key={field(statement, "id")} value={field(statement, "id")}>{formatDate(field(statement, "statementDate"))} ? {money(statementAmounts(ledger, statement, asOf).due)} due</option>)}
+        <label>Card statement paid<select key={destination} name="statement" defaultValue=""><option value="">Prepayment / no statement link</option>
+          {statements.map(statement => <option key={field(statement, "id")} value={field(statement, "id")}>{formatDate(field(statement, "statementDate"))} · {money(statementAmounts(ledger, statement, asOf).due)} due</option>)}
         </select></label></>}
       {type && type !== "transfer" && type !== "cardPayment" && <label>Category<select name="category" required defaultValue={field(template ?? {}, "category")}>
         {categories.map(category => <option key={category}>{category}</option>)}</select></label>}
@@ -163,7 +176,7 @@ export default function Page() {
   const [view, setView] = useState<View>("Overview");
   const [navDrawer, setNavDrawer] = useState(false);
   const navTrigger = useRef<HTMLButtonElement>(null);
-  const [settingsSection, setSettingsSection] = useState("Appearance & navigation");
+  const [settingsSection, setSettingsSection] = useState<SettingsGroup>("Appearance & navigation");
   const [cloudMount, setCloudMount] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!navDrawer) return;
@@ -499,28 +512,9 @@ export default function Page() {
     downloadFile("Finance_Atlas_Backup_" + today() + ".json", JSON.stringify({app: ledger.app, exportedAt: new Date().toISOString(), state: ledger}));
   }
 
-  if (!session) return <main className="login">
-    <section className="login-story"><div className="brand"><span>◈</span> Finance Atlas</div>
-      <div><h1>A clearer view of your money.</h1>
-      <p>See what’s due, where you spend, and how your savings are progressing.</p>
-      <svg className="atlas-login-visual" viewBox="0 0 320 100" aria-hidden="true"><path d="M4 88H316M4 58H316M4 28H316" stroke="currentColor" strokeOpacity=".16" />
-        <path d="M4 83C28 83 40 63 63 64S102 75 125 51S162 65 186 38S222 48 241 27S274 43 313 7" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /></svg></div>
-      <p className="login-foot">Encrypted storage on this device</p>
-    </section>
-    <section className="login-form"><p className="eyebrow">FINANCE ATLAS {desktop ? "DESKTOP" : "WEB PILOT"}</p><h2>{existing ? "Unlock your workspace" : welcomeHead ? "Unlock your cloud workspace" : welcomeConnected ? "Create your workspace" : "Create a local workspace"}</h2>
-      <p className="muted">Your vault passphrase unlocks your records on this device. Google sign-in connects optional cloud services.</p>
-      {cloudConfigured && existing === null && (welcomeConnected
-        ? <p className="welcome-connected" role="status"><Icon name="shield" /> Google connected. {welcomeHead ? "Enter your vault passphrase to continue." : "Choose a vault passphrase to finish setup."}</p>
-        : <button type="button" disabled={busy} onClick={() => void connectWelcome()}>Continue with Google</button>)}
-      {existing === undefined ? <p role="status">{error || "Checking local storage…"}</p> : <form onSubmit={unlock}>
-        <label>Passphrase<input name="passphrase" type="password" required minLength={existing || welcomeHead ? 1 : 12}
-          maxLength={128} autoComplete={existing || welcomeHead ? "current-password" : "new-password"} /></label>
-        {!existing && !welcomeHead && <label>Confirm passphrase<input name="confirm" type="password" required minLength={12} maxLength={128} autoComplete="new-password" /></label>}
-        {error && <p className="error" role="alert">{error}</p>}
-        <button className="primary" disabled={busy}>{busy ? "Working…" : existing || welcomeHead ? "Unlock workspace" : "Create workspace"}</button>
-      </form>}
-    </section>
-  </main>;
+  if (!session) return <Welcome checking={existing === undefined} existing={Boolean(existing)}
+    remoteVault={Boolean(welcomeHead)} connected={welcomeConnected} cloudAvailable={cloudConfigured}
+    desktop={desktop} busy={busy} error={error} connect={() => void connectWelcome()} submit={unlock} />;
 
   const { ledger } = session;
   const asOf = clockDay;
@@ -546,10 +540,10 @@ export default function Page() {
         <button className="back-button" aria-label="Go back" title="Back to the previous section" disabled={!entryOpen && backDepth === 0 && view === "Overview"} onClick={goBack}><Icon name="left" /><span>Back</span></button>
         {!privacy && <label className="search"><span className="sr-only">Search transactions</span><Icon name="search" /><input name="transactionSearch" autoComplete="off" type="search" value={search} placeholder="Search"
           onChange={event => {setSearch(event.target.value); if (view !== "Transactions") navigate("Transactions");}} /></label>}</div>
-        <div className="topbar-actions"><PeriodPicker key={view}>
+        <div className="topbar-actions">{!["Data & settings", "Documents", "Accounts"].includes(view) && <PeriodPicker key={view}>
         <span className="eyebrow">REPORTING PERIOD</span><div className="period-control"><button aria-label="Previous period" onClick={() => setMonth(monthShift(month, -1))}>‹</button>
           <strong>{monthLabel(month)}</strong><button aria-label="Next period" onClick={() => setMonth(monthShift(month, 1))}>›</button>
-          </div><button className="quiet" onClick={() => setMonth(currentMonth(ledger, asOf))}>Current period</button></PeriodPicker>
+          </div><button className="quiet" onClick={() => setMonth(currentMonth(ledger, asOf))}>Current period</button></PeriodPicker>}
         <button className="icon-button" aria-label="View card statements and payment dues" onClick={() => navigate("Card statements")}><Icon name="bell" /></button>
         <button className="icon-button" aria-label={row(ledger.settings.appearance).private ? "Show amounts" : "Hide amounts"} aria-pressed={row(ledger.settings.appearance).private === true}
           disabled={busy} onClick={() => {setSearch("");void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), private: !row(s.settings.appearance).private}}}));}}><Icon name="eye" /></button>
@@ -557,12 +551,12 @@ export default function Page() {
         </div>
       </header>
       <div className="page-title atlas-content-enter" key={view}><div><h1 id="workspace-heading" tabIndex={-1}>{view === "Overview" ? "Dashboard" : view === "Data & settings" ? "Settings" : view}</h1>
-        <p className="muted">{period.basis} · {formatDate(period.start)} to {formatDate(period.end)}</p></div>
+        {!["Data & settings", "Documents", "Accounts", "Assistant"].includes(view) && <p className="muted">{period.basis} · {formatDate(period.start)} to {formatDate(period.end)}</p>}</div>
         {!privacy && !["Data & settings", "Assistant", "Documents", "Tax", "Vehicles", "Investments"].includes(view) && <button className="primary" disabled={busy} onClick={() => {navigate(ledger.accounts.length ? "Transactions" : "Accounts");setEntryOpen(Boolean(ledger.accounts.length));}}>
           {ledger.accounts.length ? "+ New transaction" : "Set up an account"}
         </button>}</div>
       {error && <p className="error" role="alert">{privacy ? "The action could not be completed. Show amounts to see details." : error}</p>}
-      {notice && !privacy && <p className="notice" role="status">{notice}</p>}
+      {notice && !privacy && <p className={view === "Data & settings" ? "atlas-preference-notice" : "notice"} role="status">{notice}</p>}
       <div hidden={view !== "Overview"}><Overview ledger={ledger} month={month} asOf={asOf} privacy={privacy} navigate={navigate} selectMonth={setMonth} attention={<>
         <AttentionPanel {...featureProps} visible={view === "Overview"} privacy={privacy} cloudMount={cloudMount}
           envelope={session.envelope} vaultKey={session.key} navigate={navigate} restore={restoreCloud} reissue={reissueCloudRevision} />
@@ -577,11 +571,9 @@ export default function Page() {
         <LedgerHistory {...featureProps} search={search} openReceipts={() => navigate("Receipts")} />
       </div>}
       {view === "Accounts" && <div className="stack">
-        <Section title="Recorded balances"><p className="muted">As of {formatDate(asOf)}</p><div className="account-grid">{ledger.accounts.map(account => <article className="account" key={account.id}>
-          <small>{account.type === "credit" ? "Credit card" : account.type === "cash" ? "Cash" : "Bank account"}</small><h3>{account.name}</h3>
-          <strong>{money(balance(ledger, account, asOf))}</strong>
-          <div className="button-row section-gap"><button onClick={() => setAccountEdit(account)}>Edit / confirm balance</button>
-            {account.type === "credit" && <button onClick={() => navigate("Card statements", account.id)}>Statements</button>}</div></article>)}</div>
+        <Section title="Banks, cash & cards"><p className="muted">Balances recorded as of {formatDate(asOf)}</p><div className="account-grid">{ledger.accounts.map(account =>
+          <AccountCard key={account.id} account={account} ledger={ledger} asOf={asOf} amount={balance(ledger, account, asOf)}
+            edit={() => setAccountEdit(account)} statements={() => navigate("Card statements", account.id)} />)}</div>
           {!ledger.accounts.length && <p className="muted">Add an account below or import an existing backup.</p>}</Section>
         <Section title="Add an account"><fieldset disabled={busy}><AccountForm save={save} asOf={asOf} /></fieldset></Section>
       </div>}
@@ -604,38 +596,37 @@ export default function Page() {
       {view === "Tax" && <TaxView {...featureProps} {...deviceProps} openDocuments={openDocuments} />}
       {view === "Investments" && <InvestmentsView {...featureProps} openDocuments={openDocuments} />}
       {view === "Vehicles" && <VehiclesView {...featureProps} />}
-      {view === "Data & settings" && <div className="stack"><div className="settings-sections" role="group" aria-label="Settings sections">
-        {(["Appearance & navigation","Finance & automation","AI & providers","Data, backup & security"] as const).map((name,index) =>
-          <button key={name} aria-pressed={settingsSection === name} onClick={() => setSettingsSection(name)}>
-            <Icon name={index === 0 ? "dashboard" : index === 1 ? "wallet" : index === 2 ? "chat" : "shield"} />{name}</button>)}
-      </div>
+      {view === "Data & settings" && <SettingsLayout selected={settingsSection} onSelect={section => {setSettingsSection(section);setNotice("");}}>
       {settingsSection === "AI & providers" && <AssistantSettings {...featureProps} cloudControls={<div ref={setCloudMount} />} />}
       {settingsSection === "Finance & automation" && <AutomationSettings {...featureProps} />}
-      {settingsSection === "Data, backup & security" && <Section title="Local workspace">
-        <p className="muted">Import a Finance Atlas version 1 JSON ledger to create a local working copy.</p>
-        <label className="upload">Preview JSON backup<input type="file" accept=".json,.zip,application/json,application/zip" disabled={busy}
-          onChange={event => {const file = event.target.files?.[0]; if (file) void readImport(file); event.target.value = "";}} /></label>
-        {preview && <div className="import-preview"><strong>Ready to import</strong><p>{preview.accounts.length} accounts · {preview.transactions.length} transactions · {preview.loans.length} loans</p>
+      {settingsSection === "Data, backup & security" && preview && <Section title="Review workspace restore"><div className="import-preview"><strong>Ready to import</strong><p>{preview.accounts.length} accounts · {preview.transactions.length} transactions · {preview.loans.length} loans</p>
           <p>This replaces this browser’s workspace. Download its backup first if it has records you need.</p>
           <div className="button-row"><button className="primary" disabled={busy} onClick={async () => {
             if (await save(() => preview, true)) {setMonth(currentMonth(preview, today()));setPreview(null);}
           }}>Replace local workspace</button><button disabled={busy} onClick={() => setPreview(null)}>Cancel</button></div>
-        </div>}
-        <button onClick={() => download(ledger)}>Download unencrypted JSON</button>
-        <p className="muted">JSON is readable by anyone with the file. For private storage, use the encrypted ledger backup below.</p>
-      </Section>}<SettingsExtras {...featureProps} section={settingsSection} envelope={session.envelope} vaultKey={session.key} backups={backups} previewRestore={restored => {
+      </div></Section>}
+      <SettingsExtras {...featureProps} section={settingsSection} envelope={session.envelope} vaultKey={session.key} backups={backups} previewRestore={restored => {
         if (activeSession.current?.key === session.key && renderGeneration === sessionGeneration.current) setPreview(validateFinance(restored, today()));
-      }} /></div>}
+      }} />
+      {settingsSection === "Data, backup & security" && <details className="panel atlas-legacy-settings"><summary>Legacy ledger import and export</summary>
+        <p className="muted">Move a Finance Atlas version 1 ledger into this vault, or export a readable JSON file.</p>
+        <label className="upload">Preview JSON backup<input type="file" name="localBackup" accept=".json,.zip,application/json,application/zip" disabled={busy}
+          onChange={event => {const file = event.target.files?.[0]; if (file) void readImport(file); event.target.value = "";}} /></label>
+        <button onClick={() => download(ledger)}>Download unencrypted JSON</button>
+      </details>}
+      </SettingsLayout>}
       {accountEdit && <Editor title={"Account & balance · " + accountEdit.name} {...featureProps} close={() => setAccountEdit(null)}
         onSave={data => save(s => {
           const old = s.accounts.find(a => a.id === accountEdit.id)!;
           const next = {...s, accounts: s.accounts.map(a => a.id === old.id ? {...a, name: value(data, "name"),
-            ...(old.type === "credit" ? {limit: amount(data, "limit"), statementDay: Number(value(data, "statementDay")), dueDay: Number(value(data, "dueDay")), dueOffset: Number(value(data, "dueOffset"))} : {})} : a)};
+            ...(old.type !== "cash" ? {institution: value(data, "institution")} : {}),
+            ...(old.type === "credit" ? {network: value(data, "network"), limit: amount(data, "limit"), statementDay: Number(value(data, "statementDay")), dueDay: Number(value(data, "dueDay")), dueOffset: Number(value(data, "dueOffset"))} : {})} : a)};
           return value(data, "current") ? reconcileBalance(next, old.id, amount(data, "current"), value(data, "date"), asOf) : next;
         })}><Input name="name" label="Account name" initial={accountEdit.name} maxLength={100} />
+        {accountEdit.type !== "cash" && <Select name="institution" label="Bank or issuer" initial={field(accountEdit, "institution")} options={institutionOptions} required={false} placeholder="Detect from account name" />}
         <Input name="current" label="Confirmed current balance ₹" initial={balance(ledger, accountEdit, asOf) / 100} />
         <Input name="date" label="Current balance date" type="date" initial={asOf} max={asOf} />
-        {accountEdit.type === "credit" && <><Input name="limit" label="Credit limit ₹" initial={Number(accountEdit.limit) || 0} />
+        {accountEdit.type === "credit" && <><Select name="network" label="Card network" initial={field(accountEdit, "network")} options={networkOptions} required={false} placeholder="Detect from card name" /><Input name="limit" label="Credit limit ₹" initial={Number(accountEdit.limit) || 0} />
           <Input name="statementDay" label="Statement day" type="number" min={1} max={31} initial={Number(accountEdit.statementDay) || 15} />
           <Input name="dueDay" label="Due day" type="number" min={1} max={31} initial={Number(accountEdit.dueDay) || 5} />
           <Select name="dueOffset" label="Due month" initial={Number(accountEdit.dueOffset ?? 1)} options={[{id: "0", name: "Same month"}, {id: "1", name: "Following month"}]} /></>}

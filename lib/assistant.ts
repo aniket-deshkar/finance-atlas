@@ -4,7 +4,7 @@ import {portfolio, taxFigures, financialYear, vehicleCosts, workspaceRows, yearR
 import type {View} from "./navigation";
 
 export type Model = {id: string; label: string; provider: string; levels: string[]; fallback: string; enabled: boolean;
-  location?: string; input?: number; output?: number; pricingDate?: string; unavailable?: string};
+  location?: string; processing?: string; input?: number; output?: number; pricingDate?: string; unavailable?: string};
 export type Fact = {ref: string; start: string; end: string; values: Record<string, number>};
 export type Usage = {id: string; at?: string; model: string; reasoning: string; estimate: number; cost: number | null;
   input?: number; output?: number; calls?: number; search?: number; status: string; kind?: string};

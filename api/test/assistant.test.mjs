@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createApi} from "../app.mjs";
-import {assistantCatalog} from "../assistant.mjs";
+import {assistantCatalog, validateChat} from "../assistant.mjs";
 import {parseNav} from "../market.mjs";
 
 const id = "2c8d72ab-a0e1-462c-870f-4192a186f4dd";
@@ -15,6 +15,29 @@ const body = {id,model,reasoning:"low",question:"What did I save?",history:[],
 test("the model catalog requires an explicit processing location", () => {
   for (const configuration of [{input:1.5,output:7.5}, {location:null,input:1.5,output:7.5}]) {
     assert.equal(assistantCatalog({[model]:configuration}).find(entry => entry.id === model).enabled,false);
+  }
+});
+
+test("GPT-OSS uses the configured Google Model Garden route and its own reasoning allowlist", () => {
+  const id = "gpt-oss-120b-maas";
+  const price = {input:.09,output:.36,location:"global"};
+  const enabled = assistantCatalog({[id]:price});
+  const selected = enabled.find(model => model.id === id);
+  assert.equal(selected.provider, "OpenAI via Google Model Garden");
+  assert.equal(selected.processing, "United States");
+  assert.equal(validateChat({...body,model:id}, enabled).model.id, id);
+  assert.equal(validateChat({...body,model:id,reasoning:"xhigh"}, enabled), null);
+  for (const wrong of [assistantCatalog({}), assistantCatalog({[id]:{...price,location:"asia-south1"}})])
+    assert.equal(validateChat({...body,model:id}, wrong), null);
+});
+
+test("Luna and Terra remain unavailable until their global preview route and rates are configured", () => {
+  for (const id of ["gpt-6-luna", "gpt-6.1-terra"]) {
+    assert.match(assistantCatalog({}).find(entry => entry.id === id).unavailable, /private preview/);
+    assert.equal(validateChat({...body,model:id}, assistantCatalog({})), null);
+    const catalog = assistantCatalog({[id]:{location:"global",input:.1,output:.5}});
+    assert.equal(validateChat({...body,model:id}, catalog).model.id, id);
+    assert.equal(validateChat({...body,model:id,reasoning:"xhigh"}, catalog), null);
   }
 });
 
