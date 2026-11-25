@@ -13,7 +13,7 @@ import { readPdf, rowKey, statementCsvFromText } from "../lib/documents";
 import type { BackupControls } from "./backup";
 import { layouts, navGroups, viewIds, views, widgets } from "../lib/navigation";
 import { auditWorkbook } from "../lib/reports";
-import { Icon } from "./icons";
+import {FileIntake, PdfUnlock} from "./file-intake";
 
 export function DebtView(props: FeatureProps) {
   const {ledger, asOf, save, busy} = props;
@@ -114,7 +114,7 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
   const [file, setFile] = useState<{name:string; bytes:ArrayBuffer; pages:string[]; text:string; labels:string[]} | null>(null);
   const [columns, setColumns] = useState<StatementColumns | null>(null);
   const [error, setError] = useState(""), [notice, setNotice] = useState("");
-  const [password, setPassword] = useState<{wrong: boolean; resolve: (value: string) => void; cancel: () => void} | null>(null);
+  const [password, setPassword] = useState<{name: string; wrong: boolean; resolve: (value: string) => void; cancel: () => void} | null>(null);
   const passwordRef = useRef<typeof password>(null);
   const request = useRef(0);
   const [working,setWorking] = useState(false);
@@ -149,7 +149,7 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
       const bytes = await picked.arrayBuffer();
       const pages = pdf ? await readPdf(bytes.slice(0), wrong => new Promise((resolve, reject) => {
         if (request.current !== id) {reject(Error("Upload canceled."));return;}
-        const prompt = {wrong, resolve, cancel: () => reject(Error("Upload canceled."))};
+        const prompt = {name:picked.name, wrong, resolve, cancel: () => reject(Error("Upload canceled."))};
         passwordRef.current = prompt;setPassword(prompt);
       })) : [decodeStatementFile(bytes)];
       if (request.current !== id) return;
@@ -184,10 +184,8 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
           buildPreview(file.text, columns, dateOrder, target);
       }}>
         <option value="">Choose an account</option>{ledger.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-      <label className="statement-upload"><Icon name="file" /><span>Upload statement<small>CSV, TSV or text PDF</small></span>
-        <input type="file" name="statementFile" accept=".csv,.tsv,.pdf,text/csv,text/tab-separated-values,application/pdf" onChange={e => {
-          const picked = e.currentTarget.files?.[0];e.currentTarget.value = "";if (picked) void upload(picked);
-        }} /></label>
+      <FileIntake label="Upload statement" name="statementFile" accept=".csv,.tsv,.pdf" format="Drop a CSV, TSV or text PDF"
+        disabled={busy || working || !ledger.accounts.length} onFiles={files => void upload(files[0])} onError={setError} />
     </fieldset>
     {working && <p role="status">Processing statement…</p>}
     {file && columns && <fieldset className="statement-mapping" disabled={busy || working}>
@@ -268,11 +266,9 @@ export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: Cr
         finally {saving.current = false;setWorking(false);}
       }}>Import reviewed statement</button></>}
     </Panel>
-    {password && <Editor title="Unlock statement PDF" busy={false} close={() => {password.cancel();setPassword(null);passwordRef.current = null;}} submit="Unlock PDF"
-      onSave={async data => {password.resolve(value(data,"pdfPassword"));setPassword(null);passwordRef.current = null;return true;}}>
-      {password.wrong && <p role="alert">Incorrect password. Try again.</p>}
-      <label>PDF password<input name="pdfPassword" type="password" autoComplete="off" required /></label>
-    </Editor>}
+    {password && <PdfUnlock key={String(password.wrong)} filename={password.name} wrong={password.wrong}
+      onUnlock={value => {passwordRef.current = null;setPassword(null);password.resolve(value);}}
+      onSkip={() => {passwordRef.current = null;setPassword(null);password.cancel();}} />}
     {account && <Panel title="Confirm current balance"><p className="muted">{account.name + " · recorded " + money(balance(ledger, account, asOf))}</p>
       <form className="filter-row" key={accountId} onSubmit={e => {e.preventDefault();const data = new FormData(e.currentTarget);void save(s => reconcileBalance(s, accountId, amount(data, "balance"), value(data, "date"), asOf));}}>
         <Input name="balance" label="Bank / card confirmed balance ₹" /><Input name="date" label="Balance date" type="date" initial={asOf} max={asOf} /><button disabled={busy}>Confirm balance</button></form>

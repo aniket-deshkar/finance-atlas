@@ -4,6 +4,7 @@ import {merchantKey, readPdf, rowKey, statementCsvFromText, statementDraft, type
 import {field, minor, money, row, rows} from "../lib/ledger";
 import {deviceRecord} from "../lib/vault";
 import type {FeatureProps} from "./feature-ui";
+import {FileIntake, PdfUnlock} from "./file-intake";
 
 type Batch = ExtractedDocument & {staged?: Staged[]; outcomes?: Record<string, string>; at?: string};
 type PasswordRequest = {name: string; wrong: boolean; resolve: (password: string) => void; reject: () => void};
@@ -57,9 +58,11 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
   const [documents, setDocuments] = useState<Batch[]>([]);
   const [doc, setDoc] = useState<Batch | null>(null);
   const [kind, setKind] = useState<DocumentKind>("Statement");
-  const [account, setAccount] = useState("");
+  const [account, setAccount] = useState(ledger.accounts.length === 1 ? ledger.accounts[0].id : "");
   const [message, setMessage] = useState("");
   const [working, setWorking] = useState(false);
+  const [reading, setReading] = useState("");
+  const uploading = useRef(false);
   const [password, setPassword] = useState<PasswordRequest | null>(null);
   const pending = useRef<PasswordRequest | null>(null);
   const alive = useRef(true);
@@ -91,10 +94,13 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
   }
 
   async function upload(files: File[]) {
+    if (uploading.current || working || busy) return;
+    uploading.current = true;
     setWorking(true);setMessage("");setApproved([]);
     const results: string[] = [];
     for (const file of files) {
       if (!alive.current) break;
+      setReading(file.name);
       try {
         if (file.size > 12_000_000 || !/\.(csv|tsv|pdf|txt)$/i.test(file.name)) throw Error("Choose a CSV, TSV, TXT or PDF up to 12 MB.");
         const bytes = await file.arrayBuffer();
@@ -127,7 +133,18 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
       } catch (error) {results.push(file.name + " · " + (error instanceof Error ? error.message : "Could not read file."));}
       finally {pending.current = null;if (alive.current) setPassword(null);}
     }
-    if (alive.current) {setWorking(false);setMessage(results.join(" "));}
+    uploading.current = false;
+    if (alive.current) {setWorking(false);setReading("");setMessage(results.join(" "));}
+  }
+
+  function prepareReview(batch: Batch) {
+    const target = batch.accountId || account;
+    if (!target) {setMessage("Choose a statement account to preview transactions.");return;}
+    try {
+      const staged = statementDraft(ledger, statementText(batch), target, asOf, undefined, batch.statementMapping,
+        issues => setMessage(issues.length ? issues[0] : "Transactions are ready for review."));
+      setDoc({...batch, accountId:target, staged});setApproved([]);
+    } catch (error) {setMessage(error instanceof Error ? error.message : "Could not map statement rows.");}
   }
 
   async function reconcile(batch: Batch, mode: "auto" | "review") {
@@ -148,7 +165,7 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
         const existing = new Set(current.transactions.map(entry => field(entry, "importRowKey")).filter(Boolean));
         const entries = draft.filter(line => !existing.has(rowKey(line)) && !outcomes[rowKey(line)]).map(line => {
           const key = rowKey(line);
-          const selected = !line.match && (mode === "auto" ? line.selected : approved.includes(key));
+          const selected = !line.match && !line.possible && (mode === "auto" ? line.selected : approved.includes(key));
           if (selected || line.match) outcomes[key] = line.match || line.entry.id;
           return {...line, selected, entry: {...line.entry, importRowKey: key, importDocumentId: batch.id}};
         });
@@ -166,27 +183,23 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
   }
 
   const unread = doc?.staged?.filter(line => !doc.outcomes?.[rowKey(line)] && !ledger.transactions.some(entry => entry.importRowKey === rowKey(line))) ?? [];
+  const ready = unread.filter(line => !line.match && !line.possible);
   return <section className="panel atlas-docs stack"><div className="panel-head"><h2>Import documents</h2>
     <button disabled={!documents.length} onClick={() => download("Finance_Atlas_Extracted_Documents.json", JSON.stringify(documents.map(item => ({
       id: item.id, name: item.name, kind: item.kind, date: item.date, accountId: item.accountId, outcomes: item.outcomes
     })), null, 2))}>Export document index</button></div>
-    <p className="muted">Originals and extracted text are encrypted on this device. Select an account for statement matching.</p>
-    <div className="filter-row"><label>Document type<select value={kind} onChange={event => setKind(event.target.value as DocumentKind)}>
+    <FileIntake label="Add financial documents" accept=".pdf,.csv,.tsv,.txt" format="Drop up to 10 files here · PDF, CSV, TSV or TXT · 12 MB each"
+      disabled={working || busy} multiple onFiles={files => void upload(files)} onError={setMessage} />
+    <fieldset disabled={working || busy} className="atlas-intake-options"><label>Document type<select value={kind} onChange={event => setKind(event.target.value as DocumentKind)}>
       {kinds.map(value => <option key={value}>{value}</option>)}</select></label>
       {kind === "Statement" && <label>Statement account<select value={account} onChange={event => setAccount(event.target.value)}>
-        <option value="">Choose account</option>{ledger.accounts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select></label>}
-      <label>Add files<input aria-label="Add financial documents" type="file" accept=".pdf,.csv,.tsv,.txt" multiple disabled={working || busy}
-        onChange={event => {const files = Array.from(event.target.files ?? []);event.target.value = "";if (files.length) void upload(files);}} /></label></div>
-    {password && <form key={password.name + password.wrong} onSubmit={event => {
-      event.preventDefault();const form = event.currentTarget;
-      const input = String(new FormData(form).get("password") ?? "");form.reset();
-      setPassword(null);pending.current = null;password.resolve(input);
-    }}><label>{password.wrong ? "Incorrect password. Try again for " : "Password required for "}{password.name}
-      <input type="password" name="password" required autoComplete="off" autoFocus /></label>
-      <div className="button-row"><button className="primary">Unlock PDF</button>
-        <button type="button" onClick={() => {setPassword(null);pending.current = null;password.reject();}}>Skip file</button></div>
-    </form>}
-    <p role="status">{working && !password ? "Processing on this device…" : message}</p>
+        <option value="">Assign later</option>{ledger.accounts.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select></label>}
+    </fieldset>
+    <small className="muted">Files stay encrypted on this device. If a PDF is locked, we ask for its password before reading it.</small>
+    {password && <PdfUnlock key={password.name + password.wrong} filename={password.name} wrong={password.wrong}
+      onUnlock={value => {pending.current = null;setPassword(null);password.resolve(value);}}
+      onSkip={() => {pending.current = null;setPassword(null);password.reject();}} />}
+    <p role="status" className="atlas-import-status">{working && !password ? <><span className="atlas-pulse" aria-hidden="true"><i /><i /><i /></span>{reading ? "Reading " + reading + "…" : "Checking statement…"}</> : message}</p>
     {documents.length > 0 && <label>Document library<select value={doc?.id || ""} onChange={event => {
       setDoc(documents.find(item => item.id === event.target.value) ?? null);setApproved([]);setOpening("");setClosing("");
     }}><option value="">Choose a document</option>
@@ -201,10 +214,14 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
       }}>Save a copy of the original</button>
       {onReference && <button onClick={() => onReference(doc)}>Reference extracted figures in Assistant</button>}
       {statementText(doc) && <>
+        {!doc.staged && <button type="button" disabled={busy || working} onClick={() => prepareReview(doc)}>Preview transactions</button>}
+        <details className="atlas-verified-rules"><summary>Apply verified posting rules</summary>
         <div className="filter-row"><label>Opening balance ₹<input inputMode="decimal" value={opening} onChange={event => setOpening(event.target.value)} /></label>
           <label>Closing balance ₹<input inputMode="decimal" value={closing} onChange={event => setClosing(event.target.value)} /></label></div>
-        <button disabled={busy || working} onClick={() => void reconcile(doc, "auto")}>Match and apply verified rules</button>
-        {unread.length > 0 && <><div className="atlas-context">{unread.map(line => <label key={rowKey(line)}>
+        <button disabled={busy || working || !opening || !closing} onClick={() => void reconcile(doc, "auto")}>Match and apply verified rules</button></details>
+        {unread.length > 0 && <><div className="atlas-review-toolbar"><strong>{ready.length} ready to review</strong>
+          <button type="button" disabled={busy || working || !ready.length} onClick={() => setApproved(ready.map(rowKey))}>Select ready rows</button></div>
+          <div className="atlas-context">{unread.map(line => <label key={rowKey(line)}>
           <input type="checkbox" disabled={busy || working || Boolean(line.possible || line.match)} checked={approved.includes(rowKey(line))}
             onChange={event => setApproved(values => event.target.checked ? [...values, rowKey(line)] : values.filter(value => value !== rowKey(line)))} />
           {line.entry.date} · {line.entry.note} · {money(Math.abs(line.signed))}{line.possible ? " · Check for a matching transfer or repayment in Reconciliation" : ""}

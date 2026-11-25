@@ -6,5 +6,5 @@ export const selectLockedPdf = `(() => {
   transfer.items.add(new File([pdf], "test-locked.pdf", {type:"application/pdf"}));
   const input = document.querySelector("[aria-label='Add financial documents']");
   input.files = transfer.files;
-  input.dispatchEvent(new Event("change", {bubbles:true}));
+  input.dispatchEvent(new Event("input", {bubbles:true}));
 })()`;

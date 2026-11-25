@@ -20,9 +20,10 @@ export const viewIds: Record<View, string> = {
   Documents: "documents", Tax: "tax", Investments: "investments", Vehicles: "vehicles", Assistant: "assistant"
 };
 export const navGroups: {label: string; views: View[]}[] = [
-  {label: "Daily finances", views: ["Overview", "Daily hub", "Transactions", "Accounts", "Card statements", "Bills & policies", "EMIs & recoveries", "Reconciliation", "Cashback"]},
+  {label: "Money overview", views: ["Overview", "Accounts", "Transactions", "Documents", "Reconciliation", "Investments"]},
+  {label: "Payments", views: ["Daily hub", "Card statements", "Bills & policies", "EMIs & recoveries", "Cashback"]},
   {label: "Planning", views: ["Monthly budget", "Payment calendar", "Salary & transfers", "Goals", "12-month plan", "Insights", "Debt & credit", "Monthly report", "Tax"]},
-  {label: "Assets & documents", views: ["Investments", "Vehicles", "Documents", "Receipts"]}
+  {label: "Records", views: ["Vehicles", "Receipts"]}
 ];
 export const layouts = [
   {id: "left", name: "Left sidebar"}, {id: "right", name: "Right sidebar"}, {id: "compact", name: "Compact rail"},

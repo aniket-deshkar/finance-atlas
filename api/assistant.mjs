@@ -15,7 +15,8 @@ const ref = /^[a-z][a-z0-9-]{0,65}$/;
 const requestId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const maximum = 768;
 const knownFields = new Set(["income", "spending", "savings", "liquidBalance", "cardOutstanding", "cashOutflow", "expectedOutflow", "projected", "due", "count",
-  "fundingNeeded", "shortfall", "budgeted", "invested", "marketValue", "valuedCount", "linkedCosts", "salary", "interest", "tds", "estimatedTaxOld", "estimatedTaxNew", "debit", "credit"]);
+  "fundingNeeded", "shortfall", "budgeted", "invested", "marketValue", "valuedCount", "linkedCosts", "salary", "interest", "tds", "estimatedTaxOld", "estimatedTaxNew", "debit", "credit",
+  "netWorth", "knownDebt", "missingDebtCount", "unpricedHoldingCount"]);
 const regions = /^[a-z0-9-]{1,45}$/;
 
 export function assistantCatalog(config) {
@@ -36,8 +37,9 @@ export function validateChat(body, catalog) {
   if (typeof id !== "string" || !requestId.test(id) || !model?.levels.includes(reasoning) || typeof question !== "string" || !question.trim() || question.length > 1600 ||
       !Array.isArray(context) || context.length > 6 || !Array.isArray(history) || history.length > 4) return null;
   for (const item of context) {
-    if (!item || Object.keys(item).some(key => !["ref", "start", "end", "values"].includes(key)) || typeof item.ref !== "string" || !ref.test(item.ref) ||
+    if (!item || Object.keys(item).some(key => !["ref", "start", "end", "asOf", "values"].includes(key)) || typeof item.ref !== "string" || !ref.test(item.ref) ||
         ![item.start, item.end].every(validIsoDate) || item.start > item.end ||
+        (Object.hasOwn(item, "asOf") && !validIsoDate(item.asOf)) ||
         !item.values || Array.isArray(item.values) || typeof item.values !== "object" ||
         Object.keys(item.values).length > 24 ||
         !Object.entries(item.values).every(([name, value]) => knownFields.has(name) && Number.isSafeInteger(value) && Math.abs(value) <= 1e13)) return null;

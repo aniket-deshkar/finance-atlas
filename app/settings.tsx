@@ -1,4 +1,4 @@
-import {Tabs} from "@chakra-ui/react";
+import {Tabs} from "@ark-ui/react/tabs";
 import type {ReactNode} from "react";
 import {Icon, type IconName} from "./icons";
 
@@ -14,7 +14,7 @@ export function SettingsLayout({selected, onSelect, children}: {
   selected: SettingsGroup; onSelect: (group: SettingsGroup) => void; children: ReactNode;
 }) {
   const group = settingGroups[selected];
-  return <Tabs.Root unstyled className="atlas-preferences" orientation="vertical" value={selected}
+  return <Tabs.Root className="atlas-preferences" value={selected}
     onValueChange={({value}) => {if (Object.hasOwn(settingGroups, value)) onSelect(value as SettingsGroup);}}>
     <Tabs.List className="atlas-preference-list" aria-label="Settings sections">
       {(Object.keys(settingGroups) as SettingsGroup[]).map(key => {

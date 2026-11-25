@@ -189,6 +189,7 @@ async function main() {
   await click("Documents");
   await evaluate(selectLockedPdf);
   await until("document.body.innerText.includes('Password required for test-locked.pdf')");
+  assert.equal(await evaluate("document.activeElement === document.querySelector('.atlas-unlock-dialog[open] [name=password]')"), true);
   await set("[name=password]", "incorrect-fixture");
   await click("Unlock PDF");
   await until("document.body.innerText.includes('Incorrect password. Try again')");
@@ -510,7 +511,7 @@ async function main() {
     data.items.add(new File([${JSON.stringify("Date,Description,Debit,Credit\n" + sampleDate + ",Synthetic card purchase,123.45,\n" + sampleDate + ",Card payment,,90\n" + sampleDate + ",Unreadable amount,abc,")}], 'card.csv'));
     const input = document.querySelector('[name=statementFile]');
     input.files = data.files;
-    input.dispatchEvent(new Event('change', {bubbles:true}));
+    input.dispatchEvent(new Event('input', {bubbles:true}));
   })()`);
   await until("document.querySelector('legend')?.textContent === 'card.csv'");
   await until("!!document.querySelector('[aria-label=\"Include row 2\"]')");

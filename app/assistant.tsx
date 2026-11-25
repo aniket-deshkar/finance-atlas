@@ -206,6 +206,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
     setApproval("");
   };
   const starters: {text: string; view: View}[] = [
+    {text: "What is my known net worth?", view: "Overview"},
     {text: "How much have I saved?", view: "Overview"},
     {text: "What payments are coming up?", view: "Payment calendar"},
     {text: "Am I within my budget?", view: "Monthly budget"},

@@ -101,9 +101,10 @@ function TransactionForm({ ledger, save, asOf, close, busy, error, month }: Feat
   const templates = rows(settingsV6(ledger).merchantTemplates);
   const template = templates.find(t => t.id === templateId);
   const accounts = ledger.accounts.filter(account => !["income", "transfer", "cardPayment"].includes(type) || account.type !== "credit");
-  const source = accounts.some(account => account.id === sourceAccount) ? sourceAccount : "";
+  const source = accounts.some(account => account.id === sourceAccount) ? sourceAccount : accounts.length === 1 ? accounts[0].id : "";
   const transferAccounts = accounts.filter(account => account.id !== source);
-  const receiving = transferAccounts.some(account => account.id === transferDestination) ? transferDestination : "";
+  const receiving = transferAccounts.some(account => account.id === transferDestination) ? transferDestination :
+    source && transferAccounts.length === 1 ? transferAccounts[0].id : "";
   const categories = type === "income" ? ledger.categories.income : ledger.categories.expense;
   const statements = type === "cardPayment" ? rows(ledger.settings.cardStatements).filter(st => st.cardId === destination &&
     field(st, "statementDate") <= asOf && statementAmounts(ledger, st, asOf).due > 0) : [];
@@ -146,11 +147,13 @@ function TransactionForm({ ledger, save, asOf, close, busy, error, month }: Feat
         </select></label></>}
       {type && type !== "transfer" && type !== "cardPayment" && <label>Category<select name="category" required defaultValue={field(template ?? {}, "category")}>
         {categories.map(category => <option key={category}>{category}</option>)}</select></label>}
-      <label>Payment mode<select name="mode"><option>Other</option><option>UPI</option><option>Bank transfer</option><option>Auto-debit</option><option>Cash</option><option>Credit card</option></select></label>
       <label>Notes / event tags<input name="note" maxLength={1200} defaultValue={field(template ?? {}, "note")} /></label>
+      <details className="atlas-entry-options"><summary>Payment details and recurring options</summary><div className="filter-row">
+      <label>Payment mode<select name="mode"><option>Other</option><option>UPI</option><option>Bank transfer</option><option>Auto-debit</option><option>Cash</option><option>Credit card</option></select></label>
       <label className="checkbox"><input name="confirmDuplicate" type="checkbox" />Confirm this is a separate identical entry</label>
       {type === "expense" && <><label className="checkbox"><input name="subscription" type="checkbox" />This expense is a subscription</label>
         <label>Subscription repeat<select name="frequency"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option><option value="d28">Every 28 days</option></select></label></>}
+      </div></details>
       <button className="primary" type="submit">Record transaction</button><button type="button" onClick={close}>Cancel</button>
       <p className="editor-note">A future date schedules an entry. Balances change on its recorded date. Choose an upcoming payment above to link its bill or installment.</p>
     </form>
