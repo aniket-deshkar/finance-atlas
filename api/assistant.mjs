@@ -1,3 +1,5 @@
+import {validIsoDate} from "./cloud-routes.mjs";
+
 const availableModels = [
   {id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", provider: "Vertex AI", levels: ["minimal", "low", "medium", "high"], fallback: "low"},
   {id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", provider: "Vertex AI", levels: ["low", "medium", "high", "xhigh"], fallback: "low"},
@@ -14,7 +16,7 @@ const regions = /^[a-z0-9-]{1,45}$/;
 export function assistantCatalog(config) {
   return availableModels.map(({id, label, provider, levels, fallback, unavailable}) => {
     const spec = Object.hasOwn(config, id) ? config[id] : null;
-    const enabled = Boolean(!unavailable && spec && regions.test(spec.location) &&
+    const enabled = Boolean(!unavailable && spec && typeof spec.location === "string" && regions.test(spec.location) &&
       [spec.input, spec.output].every(value => Number.isFinite(value) && value > 0));
     return {id, label, provider, levels, fallback, enabled, unavailable: enabled ? undefined : unavailable || "Not enabled in this GCP deployment.",
       ...(enabled ? {input: spec.input, output: spec.output, location: spec.location, pricingDate: spec.pricingDate || ""} : {})};
@@ -30,8 +32,9 @@ export function validateChat(body, catalog) {
       !Array.isArray(context) || context.length > 6 || !Array.isArray(history) || history.length > 4) return null;
   for (const item of context) {
     if (!item || Object.keys(item).some(key => !["ref", "start", "end", "values"].includes(key)) || typeof item.ref !== "string" || !ref.test(item.ref) ||
-        ![item.start, item.end].every(date => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) || item.start > item.end ||
+        ![item.start, item.end].every(validIsoDate) || item.start > item.end ||
         !item.values || Array.isArray(item.values) || typeof item.values !== "object" ||
+        Object.keys(item.values).length > 24 ||
         !Object.entries(item.values).every(([name, value]) => knownFields.has(name) && Number.isSafeInteger(value) && Math.abs(value) <= 1e13)) return null;
   }
   for (const item of history) {

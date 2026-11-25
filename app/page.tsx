@@ -27,6 +27,7 @@ import { LedgerHistory } from "./transactions";
 import { AlertReview } from "./alert-review";
 import type { AlertSuggestion } from "../lib/alert-parser";
 import {Assistant, AssistantSettings} from "./assistant";
+import {UiProvider} from "./ui-provider";
 import {AutomationSettings, DocumentReviewCount, DocumentsView} from "./documents";
 import {InvestmentsView, PolicyResearch, TaxView, VehiclesView} from "./assets";
 
@@ -164,7 +165,6 @@ export default function Page() {
   const navTrigger = useRef<HTMLButtonElement>(null);
   const [settingsSection, setSettingsSection] = useState("Appearance & navigation");
   const [cloudMount, setCloudMount] = useState<HTMLDivElement | null>(null);
-  const [assistantMount, setAssistantMount] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!navDrawer) return;
     const desktopLayout = window.matchMedia("(min-width: 901px)");
@@ -425,18 +425,24 @@ export default function Page() {
     setNavDrawer(false);
     const current = navigation.current;
     if (current.view !== destination || current.accountId !== accountId) {
-      previousRoutes.current.push({...current, scroll: window.scrollY});
+      previousRoutes.current.push({...current, scroll: workspaceScroll().scrollTop});
       if (previousRoutes.current.length > 60) previousRoutes.current.shift();
       setBackDepth(previousRoutes.current.length);
     }
     navigation.current = {view: destination, accountId, scroll: 0};
     setView(destination);
     setFocusedCard(accountId);
+    if (destination === "Data & settings" && accountId === "AI & providers") setSettingsSection("AI & providers");
     setEntryOpen(false);
     setError("");
     setNotice("");
-    window.scrollTo({top: 0});
+    workspaceScroll().scrollTo({top: 0});
     if (navDrawer) requestAnimationFrame(() => document.querySelector<HTMLElement>("#workspace-heading")?.focus());
+  }
+
+  function workspaceScroll() {
+    const content = document.querySelector<HTMLElement>(".workspace > .content");
+    return content && getComputedStyle(content).overflowY === "auto" ? content : document.documentElement;
   }
 
   function closeNavigation() {
@@ -452,7 +458,7 @@ export default function Page() {
     setView(previous.view);
     setFocusedCard(previous.accountId);
     setError("");setNotice("");
-    requestAnimationFrame(() => window.scrollTo({top: previous.scroll}));
+    requestAnimationFrame(() => workspaceScroll().scrollTo({top: previous.scroll}));
   }
 
   function lock() {
@@ -504,9 +510,7 @@ export default function Page() {
     <section className="login-form"><p className="eyebrow">FINANCE ATLAS {desktop ? "DESKTOP" : "WEB PILOT"}</p><h2>{existing ? "Unlock your workspace" : welcomeHead ? "Unlock your cloud workspace" : welcomeConnected ? "Create your workspace" : "Create a local workspace"}</h2>
       <p className="muted">Your vault passphrase unlocks your records on this device. Google sign-in connects optional cloud services.</p>
       {cloudConfigured && existing === null && (welcomeConnected
-        ? <button type="button" disabled={busy} onClick={() => {
-          void disconnectCloud().then(() => {setWelcomeHead(null);setWelcomeConnected(false);setError("");}).catch(problem => setError(describe(problem)));
-        }}>Disconnect Google</button>
+        ? <p className="welcome-connected" role="status"><Icon name="shield" /> Google connected. {welcomeHead ? "Enter your vault passphrase to continue." : "Choose a vault passphrase to finish setup."}</p>
         : <button type="button" disabled={busy} onClick={() => void connectWelcome()}>Continue with Google</button>)}
       {existing === undefined ? <p role="status">{error || "Checking local storage…"}</p> : <form onSubmit={unlock}>
         <label>Passphrase<input name="passphrase" type="password" required minLength={existing || welcomeHead ? 1 : 12}
@@ -530,7 +534,7 @@ export default function Page() {
   const privacy = row(ledger.settings.appearance).private === true;
   const deviceProps = {vaultKey:session.key, scope:base64(session.envelope.salt)};
   const openDocuments = () => navigate("Documents");
-  return <div className="workspace" data-nav={placement === "compact" ? "left" : placement} data-collapsed={collapsed} data-motion={reduceMotion ? "reduced" : "full"} data-theme={row(ledger.settings.appearance).theme === "dark" ? "dark" : "light"} data-private={row(ledger.settings.appearance).private === true}>
+  return <UiProvider><div className="workspace" data-nav={placement === "compact" ? "left" : placement} data-collapsed={collapsed} data-motion={reduceMotion ? "reduced" : "full"} data-theme={row(ledger.settings.appearance).theme === "dark" ? "dark" : "light"} data-private={row(ledger.settings.appearance).private === true}>
     <BackgroundArt />
     <Sidebar ledger={ledger} view={view} collapsed={collapsed} hasSidebar={hasSidebar} busy={busy} drawer={navDrawer}
       navigate={navigate} close={closeNavigation} lock={lock} toggle={() => void save(s => ({...s,
@@ -550,7 +554,6 @@ export default function Page() {
         <button className="icon-button" aria-label={row(ledger.settings.appearance).private ? "Show amounts" : "Hide amounts"} aria-pressed={row(ledger.settings.appearance).private === true}
           disabled={busy} onClick={() => {setSearch("");void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), private: !row(s.settings.appearance).private}}}));}}><Icon name="eye" /></button>
         <button className="icon-button" aria-label="Settings" title="Settings" aria-current={view === "Data & settings" ? "page" : undefined} onClick={() => navigate("Data & settings")}><Icon name="settings" /></button>
-        <div ref={setAssistantMount} className="assistant-launch-slot" />
         </div>
       </header>
       <div className="page-title atlas-content-enter" key={view}><div><h1 id="workspace-heading" tabIndex={-1}>{view === "Overview" ? "Dashboard" : view === "Data & settings" ? "Settings" : view}</h1>
@@ -570,6 +573,7 @@ export default function Page() {
       </section> : <>
       {view === "Transactions" && <div className="stack">
         {entryOpen && <Section title="New transaction"><fieldset disabled={busy}><TransactionForm {...featureProps} close={() => setEntryOpen(false)} /></fieldset></Section>}
+        <div className="button-row"><button type="button" onClick={() => navigate("Reconciliation")}><Icon name="file" />Import bank or card statement</button></div>
         <LedgerHistory {...featureProps} search={search} openReceipts={() => navigate("Receipts")} />
       </div>}
       {view === "Accounts" && <div className="stack">
@@ -581,7 +585,7 @@ export default function Page() {
           {!ledger.accounts.length && <p className="muted">Add an account below or import an existing backup.</p>}</Section>
         <Section title="Add an account"><fieldset disabled={busy}><AccountForm save={save} asOf={asOf} /></fieldset></Section>
       </div>}
-      {view === "Card statements" && <StatementsView key={focusedCard} {...featureProps} focusedCard={focusedCard} />}
+      {view === "Card statements" && <StatementsView key={focusedCard} {...featureProps} focusedCard={focusedCard} onImport={account => navigate("Reconciliation", account)} />}
       {view === "Daily hub" && <DailyView {...featureProps} />}
       {view === "Bills & policies" && <div className="stack"><BillsView {...featureProps} /><PolicyResearch {...deviceProps} /></div>}
       {view === "EMIs & recoveries" && <EmiView {...featureProps} />}
@@ -592,7 +596,7 @@ export default function Page() {
       {view === "12-month plan" && <ForecastView {...featureProps} />}
       {view === "Insights" && <InsightsView {...featureProps} />}
       {view === "Debt & credit" && <DebtView {...featureProps} />}
-      {view === "Reconciliation" && <div className="stack"><DocumentsView {...featureProps} {...deviceProps} /><ReconcileView {...featureProps} {...deviceProps} /></div>}
+      {view === "Reconciliation" && <ReconcileView key={focusedCard} {...featureProps} {...deviceProps} initialAccount={focusedCard} />}
       {view === "Cashback" && <RewardsView {...featureProps} />}
       {view === "Receipts" && <ReceiptsView {...featureProps} />}
       {view === "Monthly report" && <ReportView {...featureProps} />}
@@ -641,10 +645,10 @@ export default function Page() {
         }}>Remove unused account</button>
       </Editor>}
       </>}
-      <Assistant key={deviceProps.scope} {...featureProps} {...deviceProps} view={view} target={focusedCard} launcher={assistantMount}
+      <Assistant key={deviceProps.scope} {...featureProps} {...deviceProps} view={view} target={focusedCard}
         privacy={privacy} navigate={navigate} renderDocuments={onReference => view === "Documents" || view === "Reconciliation" ?
           <p>Open the full Assistant to reference an extracted document.</p> : <DocumentsView {...featureProps} {...deviceProps} onReference={onReference} />} />
     </main>
-  </div>;
+  </div></UiProvider>;
 }
 

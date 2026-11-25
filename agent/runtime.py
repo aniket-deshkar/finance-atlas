@@ -11,6 +11,12 @@ from google.genai import types
 from pydantic import ValidationError
 
 
+class ModelResponseError(ValueError):
+    def __init__(self, code):
+        super().__init__("Model response unavailable.")
+        self.code = code if code in {"PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED"} else None
+
+
 def vertex_model(model: str, location: str) -> Gemini:
     return Gemini(model=model, client_kwargs={
         "enterprise": True,
@@ -35,7 +41,7 @@ async def run_agent(agent, payload):
         )) as events:
             async for event in events:
                 if event.error_code:
-                    raise ValueError("Model response unavailable.")
+                    raise ModelResponseError(event.error_code)
                 if event.author != agent.name or not event.is_final_response() or not event.content:
                     continue
                 text = "".join(part.text or "" for part in event.content.parts or [] if not part.thought)

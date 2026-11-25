@@ -67,6 +67,7 @@ function numeric(text: string) {
 }
 const signature = (entry: Row) => [entry.date, entry.type, minor(entry.amount), entry.accountId, entry.toId ?? "", field(entry, "note").trim().toLowerCase()].join("|");
 export type Staged = {entry: Entry; match: string; possible: string; selected: boolean; statementAccountId: string; signed: number};
+const normalizeDescription = (value?: string) => (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
 export function statementMovement(entry: Entry, accountId: string) {
   if (entry.accountId === accountId) return minor(entry.amount) * (entry.type === "income" || entry.type === "refund" ? 1 : -1);
@@ -76,20 +77,55 @@ export function statementMatches(ledger: Ledger, item: Staged) {
   return ledger.transactions.filter(t => t.date === item.entry.date && statementMovement(t, item.statementAccountId) === item.signed);
 }
 
-export function parseStatement(text: string, ledger: Ledger, accountId: string, asOf: string, dateOrder: "day-first" | "month-first" = "day-first"): Staged[] {
-  const account = ledger.accounts.find(a => a.id === accountId);
-  if (!account) throw new Error("Choose an account first.");
-  const table = csvParse(text), headers = table.shift()?.map(text => text.toLowerCase().replace(/[^a-z]/g, "")) ?? [];
+export const statementFields = {
+  date: ["transactiondate", "txndate", "date", "valuedate", "postingdate"],
+  note: ["description", "narration", "particulars", "particular", "details", "note", "merchant", "remarks"],
+  debit: ["debit", "withdrawal", "withdrawalamt", "debitamount", "moneyout"],
+  credit: ["credit", "deposit", "depositamt", "creditamount", "moneyin"],
+  amount: ["transactionamount", "txnamount", "amount"],
+  direction: ["transactiontype", "type", "direction", "drcr", "crdr"]
+} as const;
+export type StatementColumns = Record<keyof typeof statementFields, number>;
+
+export function statementColumns(text: string) {
+  const table = csvParse(text), labels = table.shift() ?? [];
+  const headers = labels.map(text => text.toLowerCase().replace(/[^a-z]/g, ""));
   const col = (...names: string[]) => {
     for (const name of names) {const exact = headers.indexOf(name);if (exact >= 0) return exact;}
     return headers.findIndex(h => !h.includes("balance") && names.some(name => h.startsWith(name) || h.endsWith(name)));
   };
-  const date = col("transactiondate", "txndate", "date", "valuedate", "postingdate"), note = col("description", "narration", "particulars", "particular", "details", "note", "merchant", "remarks");
-  const debit = col("debit", "withdrawal", "withdrawalamt", "debitamount"), credit = col("credit", "deposit", "depositamt", "creditamount");
-  const amount = col("transactionamount", "txnamount", "amount"), direction = col("transactiontype", "type", "direction", "drcr", "crdr");
+  const columns = Object.fromEntries(Object.entries(statementFields).map(([name, values]) => [name, col(...values)])) as StatementColumns;
+  if (columns.amount === columns.debit || columns.amount === columns.credit) columns.amount = -1;
+  return {table, labels, columns};
+}
+
+export function parseStatement(text: string, ledger: Ledger, accountId: string, asOf: string,
+  dateOrder: "day-first" | "month-first" = "day-first", options?: {columns?: StatementColumns; debitPositive?: boolean}): Staged[] {
+  const account = ledger.accounts.find(a => a.id === accountId);
+  if (!account) throw new Error("Choose an account first.");
+  const {table, columns, labels} = statementColumns(text);
+  const {date, note, debit, credit, amount, direction} = options?.columns ?? columns;
+  const selectedColumns = [date, note, debit, credit, amount, direction].filter(index => index >= 0);
+  if (selectedColumns.some(index => !Number.isInteger(index) || index >= labels.length) || new Set(selectedColumns).size !== selectedColumns.length)
+    throw new Error("Map each statement field to a different column.");
   if (date < 0 || (amount < 0 && debit < 0 && credit < 0)) throw new Error("CSV needs a Date column and Amount or Debit / Credit columns.");
+  if (!table.length) throw new Error("This statement contains no transaction rows.");
   if (table.length > 5000) throw new Error("Import no more than 5,000 statement rows at a time.");
-  const exact = new Map(ledger.transactions.map(t => [signature(t), t.id]));
+  const byMovement = new Map<number, Entry[]>(), categoriesByDescription = new Map<string, Set<string>>();
+  const categoryKey = (type: string, description?: string) => type + ":" + normalizeDescription(description);
+  for (const recorded of ledger.transactions) {
+    const movement = statementMovement(recorded, accountId);
+    if (!movement) continue;
+    const neighbors = byMovement.get(movement) ?? [];
+    neighbors.push(recorded);
+    byMovement.set(movement, neighbors);
+    if (recorded.category && normalizeDescription(recorded.note)) {
+      const key = categoryKey(recorded.type, recorded.note);
+      const common = categoriesByDescription.get(key) ?? new Set<string>();
+      common.add(recorded.category);
+      categoriesByDescription.set(key, common);
+    }
+  }
   const seen = new Set<string>();
   return table.map((line, i) => {
     try {
@@ -98,6 +134,7 @@ export function parseStatement(text: string, ledger: Ledger, accountId: string, 
       const dr = debit >= 0 ? Math.abs(numeric(line[debit] ?? "")) : 0, cr = credit >= 0 ? Math.abs(numeric(line[credit] ?? "")) : 0;
       if (dr && cr) throw new Error("The row contains both a debit and a credit.");
       let signed = amount >= 0 ? numeric(line[amount] ?? "") : 0;
+      if (options?.debitPositive && !/(?:cr|dr)\.?$/i.test((line[amount] ?? "").trim())) signed = -signed;
       const mode = direction >= 0 ? (line[direction] ?? "").toLowerCase().trim().replace(/^(dr|cr)\.$/, "$1") : "";
       if (/^(dr|debit|expense|withdrawal)$/.test(mode)) signed = -Math.abs(signed);
       else if (/^(cr|credit|income|deposit|refund)$/.test(mode)) signed = Math.abs(signed);
@@ -109,20 +146,23 @@ export function parseStatement(text: string, ledger: Ledger, accountId: string, 
       const incoming = cr > 0 || (!dr && signed > 0);
       const type = incoming ? account.type === "credit" ? "refund" : "income" : "expense";
       const categories = type === "income" ? ledger.categories.income : ledger.categories.expense;
-      const category = categories.find(c => c === (type === "income" ? "Other" : "Other Expenses")) || categories[0];
+      const description = (note >= 0 ? line[note] : "")?.trim().slice(0, 1200) || "";
+      const remembered = categoriesByDescription.get(categoryKey(type, description));
+      const category = (remembered?.size === 1 ? categories.find(value => remembered.has(value)) : undefined) ||
+        categories.find(c => c === (type === "income" ? "Other" : "Other Expenses")) || categories[0];
       const entry: Entry = {id: crypto.randomUUID(), type, date: posted, amount: dr || cr || Math.abs(signed), accountId,
-        category, toId: "", note: (note >= 0 ? line[note] : "Statement entry")?.trim().slice(0, 1200) || "Statement entry", source: "statement"};
+        category, toId: "", note: description || "Statement entry", source: "statement"};
       if (minor(entry.amount) <= 0) throw new Error("The transaction amount must be positive.");
       const key = signature(entry);
       if (seen.has(key)) throw new Error("The file contains a duplicate transaction. Review it before importing.");
       seen.add(key);
       const signedAmount = minor(entry.amount) * (incoming ? 1 : -1);
-      const possible = ledger.transactions.filter(t => statementMovement(t, accountId) === signedAmount &&
-        Math.abs(Date.parse(t.date) - Date.parse(entry.date)) <= 86400000);
-      const sameDescription = possible.filter(t => t.date === entry.date && (t.note ?? "").trim().toLowerCase() === entry.note?.toLowerCase());
-      const match = exact.get(key) || (sameDescription.length === 1 ? sameDescription[0].id : "");
-      return {entry, match, possible: !match && possible.length ? possible.length === 1 ? possible[0].id : "review" : "",
-        selected: !match && possible.length === 0, statementAccountId: accountId, signed: signedAmount};
+      const possible = (byMovement.get(signedAmount) ?? []).filter(t => Math.abs(Date.parse(t.date) - Date.parse(entry.date)) <= 86400000);
+      const sameDescription = possible.filter(t => t.date === entry.date && normalizeDescription(t.note) === normalizeDescription(entry.note));
+      const match = sameDescription.length === 1 ? sameDescription[0].id : "";
+      const needsClassification = /\b(?:neft|imps|rtgs|self transfer|funds? transfer|card payment|payment received|payment thank you|card repayment|card settlement)\b/i.test(entry.note ?? "");
+      return {entry, match, possible: !match && (possible.length || needsClassification) ? possible.length === 1 ? possible[0].id : "review" : "",
+        selected: !match && possible.length === 0 && !needsClassification, statementAccountId: accountId, signed: signedAmount};
     } catch (error) {throw new Error("CSV row " + (i + 2) + " · " + (error instanceof Error ? error.message : "Invalid row."));}
   });
 }
@@ -131,12 +171,19 @@ export function importStatement(ledger: Ledger, staged: Staged[], filename: stri
   let next = structuredClone(ledger);
   const reconciled = {...row(row(next.settings.dailyV6).reconciled)};
   const signatures = new Set(next.transactions.map(signature));
+  const matchedMovements = new Set<string>();
   for (const item of staged) {
     if (!item.selected && !item.match) continue;
     const target = item.match && next.transactions.find(t => t.id === item.match);
     if (item.match && (!target || target.date !== item.entry.date || statementMovement(target, item.statementAccountId) !== item.signed))
       throw new Error("A reconciliation match changed. Review the preview.");
-    if (target) {reconciled[target.id] = {at: asOf, source: filename};continue;}
+    if (target) {
+      const movement = JSON.stringify([item.statementAccountId, target.id]);
+      if (matchedMovements.has(movement)) throw new Error("Two statement rows match the same recorded entry. Choose a different match for one of the rows.");
+      matchedMovements.add(movement);
+      reconciled[target.id] = {at: asOf, source: filename};
+      continue;
+    }
     if (statementMovement(item.entry, item.statementAccountId) !== item.signed) throw new Error("The classified transfer direction does not agree with the statement.");
     const key = signature(item.entry);
     if (signatures.has(key)) throw new Error("A matching transaction now exists. Preview the file again.");

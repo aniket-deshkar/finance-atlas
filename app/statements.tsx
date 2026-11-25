@@ -5,7 +5,7 @@ import { addStatement, field, hasReversal, latestStatement, minor, money, report
 import { activeLinks, addMonths, confirmStatementEmi, loans, postedRows, recordPendingCard, removeUnsettledStatement, reverseEntry, schedule, sum, updateStatement, type Obligation } from "../lib/finance";
 import { accountName, amount, dateText, Editor, Input, Panel, PaymentEditor, Select, Stats, Table, value, type FeatureProps } from "./feature-ui";
 
-export function StatementsView(props: FeatureProps & {focusedCard?: string}) {
+export function StatementsView(props: FeatureProps & {focusedCard?: string; onImport: (account: string) => void}) {
   const {ledger, month, asOf, save, busy} = props;
   const [card, setCard] = useState(props.focusedCard || ""), [layout, setLayout] = useState("list"), [status, setStatus] = useState("");
   const [payment, setPayment] = useState<Obligation | null>(null), [editing, setEditing] = useState<Row | null>(null), [breakdown, setBreakdown] = useState<Row | null>(null);
@@ -23,7 +23,7 @@ export function StatementsView(props: FeatureProps & {focusedCard?: string}) {
     <Stats items={[["Billed this period", sum(statements.filter(st => field(st, "statementDate") >= period.start && field(st, "statementDate") <= period.end).map(st => minor(st.billAmount)))],
       ["Recorded repayments", sum(postedRows(ledger, period.start, period.end, asOf).filter(t => t.type === "cardPayment" && (!card || t.toId === card)).map(t => t.signed))],
       ["Current statement dues", sum(latest.map(st => statementAmounts(ledger, st, asOf).due))], ["Pending settlements", sum(pending.map(p => minor(p.amount)))]]} />
-    <Panel title="Card statements"><div className="filter-row"><label>Credit card<select value={card} onChange={e => setCard(e.target.value)}><option value="">All credit cards</option>{ledger.accounts.filter(a => a.type === "credit").map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+    <Panel title="Card statements"><div className="filter-row"><button type="button" onClick={() => props.onImport(card || ledger.accounts.find(a => a.type === "credit")?.id || "")}>Import card transactions</button><label>Credit card<select value={card} onChange={e => setCard(e.target.value)}><option value="">All credit cards</option>{ledger.accounts.filter(a => a.type === "credit").map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       <label>Status<select value={status} onChange={e => setStatus(e.target.value)}><option value="">All statements</option><option value="due">Current dues</option><option value="paid">Settled</option><option value="pending">Pending payment</option></select></label>
       <div className="segmented"><button aria-pressed={layout === "list"} onClick={() => setLayout("list")}>List</button><button aria-pressed={layout === "cards"} onClick={() => setLayout("cards")}>Cards</button></div></div>
       {layout === "list" ? <Table headers={["Card / issued", "Due", "Total billed", "Settled", "Current remaining", ""]}>{selected.map(st => {

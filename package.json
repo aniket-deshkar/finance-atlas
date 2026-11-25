@@ -9,6 +9,7 @@
     "check": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "test:browser": "node tests/browser-smoke.mjs",
+    "eval": "node scripts/eval.mjs",
     "verify:hosting": "node scripts/verify-hosting.mjs",
     "desktop:dev": "node scripts/desktop.mjs dev",
     "desktop:build": "node scripts/desktop.mjs build",
@@ -23,6 +24,8 @@
     "@grpc/grpc-js": "1.14.7"
   },
   "dependencies": {
+    "@chakra-ui/react": "3.38.0",
+    "@emotion/react": "11.14.0",
     "@tauri-apps/api": "^2.12.4",
     "firebase": "13.3.0",
     "next": "16.4.6",

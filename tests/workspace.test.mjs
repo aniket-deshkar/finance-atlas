@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {blank, addAccount} from "../lib/ledger.ts";
 import {estimateTax, portfolio, putFinancialRecord, vehicleCosts} from "../lib/assets.ts";
-import {statementDraft, verifiedStatement, documentHints} from "../lib/documents.ts";
+import {statementDraft, verifiedStatement, documentHints, statementCsvFromText} from "../lib/documents.ts";
+import {importStatement, parseStatement, statementColumns} from "../lib/files.ts";
 import {assistantFact, localAnswer} from "../lib/assistant.ts";
 
 const date = "2026-11-04";
@@ -31,6 +32,38 @@ test("tax estimates account for standard deduction, rebate, marginal relief, ces
   assert.equal(estimateTax(2026,128_500_000,0,23456,0).modernAfterTds,1_016_544);
   assert.equal(estimateTax(2025,55_000_000,0,0,0).old,0);
   assert.equal(estimateTax(2026,600_000_000,0,0,0),null);
+});
+
+test("statement mapping preserves card charges, holds ambiguous repayments, and links recorded entries", () => {
+  const ledger = addAccount(empty(), {id:"card", name:"Fictional card", type:"credit", opening:0, openingDate:"2026-04-01"});
+  const source = "Posted,Shop,Value\n11/03/2026,Bakery,22\n11/04/2026,Card payment,-40";
+  const {columns} = statementColumns(source);
+  const mapping = {columns:{...columns,date:0,note:1,amount:2}, debitPositive:true};
+  const draft = parseStatement(source, ledger, "card", date, "month-first", mapping);
+  assert.deepEqual(draft.map(line => [line.signed,line.entry.type,line.selected]), [[-2200,"expense",true],[4000,"refund",false]]);
+  const repayment = {...draft[1].entry,type:"cardPayment",accountId:"bank",toId:"card"};
+  ledger.transactions.push(repayment);
+  const retry = parseStatement(source, ledger, "card", date, "month-first", mapping);
+  assert.equal(retry[1].match, repayment.id);
+  const saved = importStatement(ledger, retry, "card.csv", "", date, false);
+  assert.equal(saved.transactions.length, 2);
+  assert.equal(saved.transactions.filter(entry => entry.type === "cardPayment").length, 1);
+});
+
+test("supported text PDFs retain explicit debit and credit directions", () => {
+  const text = statementCsvFromText(["Date Description Amount\n02 Nov 2026 Cafe 250.00 DR.\n04 Nov 2026 Refund 55.00 CR"]);
+  assert.deepEqual(parseStatement(text, empty(), "bank", date).map(line => line.signed), [-25000,5500]);
+  assert.equal(statementCsvFromText(["Date Description Amount\n02 Nov 2026 Cafe 250.00"]), "");
+});
+
+test("a recorded movement can match only one row per statement account", () => {
+  const ledger = empty();
+  const text = "Date,Description,Debit,Credit\n2026-11-03,Bakery,22,\n2026-11-03,Groceries,22,";
+  const preview = parseStatement(text, ledger, "bank", date);
+  ledger.transactions.push({...preview[0].entry,id:"recorded"});
+  const duplicatedMatch = preview.map(line => ({...line,match:"recorded",selected:false}));
+  assert.throws(() => importStatement(ledger, duplicatedMatch, "bank.csv", "", date, false), /same recorded entry/);
+  assert.equal(ledger.transactions.length, 1);
 });
 
 test("portfolio sale updates cost basis without repricing earlier holdings; vehicle costs use unique linked entries", () => {

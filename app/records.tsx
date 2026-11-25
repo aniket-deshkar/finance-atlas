@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Switch } from "@chakra-ui/react";
 import { addEntry, balance, field, hasReversal, minor, money, monthLabel, monthShift, row, rows, type Entry, type Ledger, type Row } from "../lib/ledger";
 import { cardCycle, cardUsage, cashMetrics, categoryActual, debtRows, matchRecordedBills, netPosition, reconcileBalance,
   repeatingPayments, settingsV6, simulateDebt, sum } from "../lib/finance";
-import { attachReceipt, base64, csvEncode, download, importStatement, parseStatement, receiptArchive, statementMatches, unbase64, type Staged } from "../lib/files";
+import { attachReceipt, base64, csvEncode, download, importStatement, parseStatement, receiptArchive, statementColumns, statementMatches, unbase64, type Staged, type StatementColumns } from "../lib/files";
 import { accountName, amount, Check, Editor, Input, Panel, Select, Stats, Table, value, type FeatureProps } from "./feature-ui";
 import { deriveKey, deviceBackupLimit, deviceRecord, exportDeviceRecords, openEncryptedBackup, restoreDeviceRecords, serializeEnvelope, snapshots, type Envelope } from "../lib/vault";
 import { documentDigest, saveDocumentIndex } from "./documents";
-import { rowKey } from "../lib/documents";
+import { readPdf, rowKey, statementCsvFromText } from "../lib/documents";
 import type { BackupControls } from "./backup";
 import { layouts, navGroups, viewIds, views, widgets } from "../lib/navigation";
 import { auditWorkbook } from "../lib/reports";
@@ -100,71 +101,153 @@ export function InsightsView({ledger, month, asOf}: FeatureProps) {
   </div>;
 }
 
-export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: CryptoKey}) {
+const mappingLabels: Record<keyof StatementColumns, string> = {
+  date: "Date", note: "Description", amount: "Amount", debit: "Debit", credit: "Credit", direction: "Debit / credit indicator"
+};
+const transactionLabels: Record<Entry["type"], string> = {expense:"Expense", income:"Income", refund:"Refund", transfer:"Account transfer", cardPayment:"Card repayment"};
+
+export function ReconcileView(props: FeatureProps & {scope: string; vaultKey: CryptoKey; initialAccount?: string}) {
   const {ledger, asOf, save, busy, scope, vaultKey} = props;
-  const [accountId, setAccountId] = useState(ledger.accounts[0]?.id ?? ""), [staged, setStaged] = useState<Staged[]>([]), [file, setFile] = useState<{name:string; bytes:ArrayBuffer; text:string} | null>(null), [error, setError] = useState("");
+  const [accountId, setAccountId] = useState(ledger.accounts.find(a => a.id === props.initialAccount)?.id ?? ""), [staged, setStaged] = useState<Staged[]>([]);
+  const [file, setFile] = useState<{name:string; bytes:ArrayBuffer; pages:string[]; text:string; labels:string[]} | null>(null);
+  const [columns, setColumns] = useState<StatementColumns | null>(null);
+  const [error, setError] = useState(""), [notice, setNotice] = useState("");
+  const [password, setPassword] = useState<{wrong: boolean; resolve: (value: string) => void; cancel: () => void} | null>(null);
+  const passwordRef = useRef<typeof password>(null);
+  const request = useRef(0);
   const [working,setWorking] = useState(false);
+  const saving = useRef(false);
   const [dateOrder, setDateOrder] = useState<"day-first" | "month-first">("day-first");
+  const [debitPositive, setDebitPositive] = useState(false);
+  const [page, setPage] = useState(0);
   const cfg = settingsV6(ledger), reconciled = row(cfg.reconciled), account = ledger.accounts.find(a => a.id === accountId);
-  return <div className="stack"><Panel title="Statement import & reconciliation" subtitle="Preview local bank and credit card CSV files before adding any entries">
-    <div className="filter-row"><label>Account<select value={accountId} onChange={e => {setAccountId(e.target.value);setStaged([]);}}>{ledger.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+  const selected = staged.filter(line => line.selected || line.match).length;
+  const matches = staged.flatMap(line => line.match ? [line.match] : []);
+  const repeatedMatch = new Set(matches).size !== matches.length;
+  const missingCounterpart = staged.some(({selected, match, entry}) => selected && !match &&
+    (entry.type === "transfer" || entry.type === "cardPayment") && (!entry.accountId || !entry.toId));
+  useEffect(() => () => {request.current++;passwordRef.current?.cancel();}, []);
+  async function upload(picked: File) {
+    const id = ++request.current;
+    setError("");setNotice("");setFile(null);setColumns(null);setStaged([]);setWorking(true);
+    try {
+      const pdf = /\.pdf$/i.test(picked.name);
+      if ((!pdf && !/\.csv$/i.test(picked.name)) || picked.size > (pdf ? 12_000_000 : 3_000_000))
+        throw Error("Choose a CSV up to 3 MB or a PDF up to 12 MB.");
+      const bytes = await picked.arrayBuffer();
+      const pages = pdf ? await readPdf(bytes.slice(0), wrong => new Promise((resolve, reject) => {
+        if (request.current !== id) {reject(Error("Upload canceled."));return;}
+        const prompt = {wrong, resolve, cancel: () => reject(Error("Upload canceled."))};
+        passwordRef.current = prompt;setPassword(prompt);
+      })) : [await picked.text()];
+      if (request.current !== id) return;
+      const text = pdf ? statementCsvFromText(pages) : pages[0];
+      if (!text) throw Error("This PDF has no supported date, amount and debit/credit rows. Use the bank or card issuer’s CSV export.");
+      const {labels, columns} = statementColumns(text);
+      if (!labels.length) throw Error("The statement is empty.");
+      setFile({name:picked.name,bytes,pages,text,labels});setColumns(columns);
+    } catch (problem) {
+      if (request.current === id) setError(problem instanceof Error ? problem.message : "Could not read the statement.");
+    } finally {
+      if (request.current === id) {setWorking(false);setPassword(null);passwordRef.current = null;}
+    }
+  }
+  function preview() {
+    if (!file || !columns) return;
+    setError("");setNotice("");setPage(0);setStaged([]);
+    try {setStaged(parseStatement(file.text, ledger, accountId, asOf, dateOrder, {columns,debitPositive}));}
+    catch (problem) {setError(problem instanceof Error ? problem.message : "Could not map the statement.");}
+  }
+  return <div className="stack"><Panel title="Import bank or credit card transactions" subtitle="Upload a statement, map its columns and review what will be added to your ledger.">
+    {!ledger.accounts.length && <p>Add a bank account or credit card in Accounts before importing a statement.</p>}
+    <fieldset className="statement-setup" disabled={busy || working || !ledger.accounts.length}>
+      <label>Statement account<select name="statementAccount" value={accountId} onChange={e => {setAccountId(e.target.value);setStaged([]);}}>
+        <option value="">Choose an account</option>{ledger.accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+      <label className="statement-upload">Upload statement<input type="file" name="statementFile" accept=".csv,.pdf,text/csv,application/pdf" disabled={!account} onChange={e => {
+        const picked = e.currentTarget.files?.[0];e.currentTarget.value = "";if (picked) void upload(picked);
+      }} /></label>
+    </fieldset>
+    {working && <p role="status">Processing statement…</p>}
+    {file && columns && <fieldset className="statement-mapping" disabled={busy || working}>
+      <legend>{file.name}</legend>
+      <p className="muted">Check the detected columns. For a single unsigned amount column, use a debit/credit indicator or confirm which sign represents money out.</p>
+      <div className="statement-setup">{Object.entries(mappingLabels).map(([key,label]) => {
+        const field = key as keyof StatementColumns;
+        return <label key={key}>{label}<select name={key} value={columns[field]} onChange={e => {
+          setColumns({...columns,[field]:Number(e.target.value)});setStaged([]);
+        }}><option value={-1}>No column</option>{file.labels.map((heading,index) => <option key={index} value={index}>{heading || "Column " + (index + 1)}</option>)}</select></label>;
+      })}
       <label>Numeric date format<select value={dateOrder} onChange={event => {setDateOrder(event.target.value as "day-first" | "month-first");setStaged([]);}}><option value="day-first">Day / month / year</option><option value="month-first">Month / day / year</option></select></label>
-      <label>Choose statement CSV<input type="file" accept=".csv,text/csv" disabled={busy} onChange={async e => {
-        const picked = e.target.files?.[0];e.target.value = "";if (!picked) return;
-        setError("");setStaged([]);
-        try {
-          if (picked.size > 3_000_000) throw Error("Choose a statement CSV up to 3 MB.");
-          const bytes = await picked.arrayBuffer(), text = new TextDecoder().decode(bytes);
-          setStaged(parseStatement(text, ledger, accountId, asOf, dateOrder));setFile({name:picked.name,bytes,text});
-        }
-        catch (problem) {setError(problem instanceof Error ? problem.message : "Could not parse statement.");}
-      }} /></label></div>
-    <p className="muted">Choose the numeric date order used by your bank before selecting the file. ISO and named-month dates are interpreted independently. Review transfers and card settlements before importing.</p>
-    {error && <p className="error">{error}</p>}
-    {staged.length > 0 && <><Table headers={["Include", "Date / description", "Type / category", "Amount", "Match recorded entry"]}>{staged.map((item, i) =>
-      <tr key={item.entry.id}><td><input type="checkbox" aria-label={"Include row " + (i + 1)} checked={item.selected} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, selected: e.target.checked} : r))} /></td>
+      {columns.amount >= 0 && <label>Positive amounts mean<select value={debitPositive ? "debit" : "credit"} onChange={e => {setDebitPositive(e.target.value === "debit");setStaged([]);}}><option value="credit">Money in / card credit</option><option value="debit">Money out / card charge</option></select></label>}
+      </div><button type="button" className="primary" disabled={!account} onClick={preview}>Preview transactions</button>
+    </fieldset>}
+    {error && <p className="error" role="alert">{error}</p>}
+    {notice && <p role="status">{notice}</p>}
+    {staged.length > 0 && <><div className="statement-review"><strong>{staged.length} rows · {selected} ready to import or match</strong>
+      <p className="muted">Review transfers, card repayments and similar transactions before including them.</p></div>
+      <Table headers={["Include", "Date / description", "Type / category", "Amount", "Match recorded entry"]}>{staged.slice(page * 40, page * 40 + 40).map((item, index) => {
+      const i = page * 40 + index;
+      return <tr key={item.entry.id}><td><input type="checkbox" aria-label={"Include row " + (i + 1)} checked={item.selected || Boolean(item.match)} disabled={Boolean(item.match) || busy || working} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, selected: e.target.checked} : r))} /></td>
         <td>{item.entry.date}<small>{item.entry.note}</small></td><td><select aria-label={"Row " + (i + 1) + " type"} value={item.entry.type} disabled={Boolean(item.match)}
           onChange={e => setStaged(old => old.map((r, j) => {
             if (i !== j) return r;
             const type = e.target.value as Entry["type"], incoming = r.signed > 0;
-            const source = incoming && (type === "transfer" || type === "cardPayment") ? ledger.accounts.find(a => a.type !== "credit" && a.id !== accountId)?.id || "" : accountId;
-            const toId = type === "cardPayment" ? account?.type === "credit" ? accountId : ledger.accounts.find(a => a.type === "credit")?.id || ""
-              : type === "transfer" ? incoming ? accountId : ledger.accounts.find(a => a.type !== "credit" && a.id !== accountId)?.id || "" : "";
+            const linked = type === "transfer" || type === "cardPayment";
+            const source = incoming && linked ? "" : accountId;
+            const toId = incoming && linked ? accountId : "";
             const category = type === "cardPayment" || type === "transfer" ? "" : type === "income" ? ledger.categories.income[0] : ledger.categories.expense[0];
             return {...r, entry: {...r.entry, type, accountId: source, toId, category}};
-          }))}>{(account?.type === "credit" ? ["expense", "refund", "cardPayment"] : ["expense", "income", "refund", "transfer", "cardPayment"]).map(t => <option key={t}>{t}</option>)}</select>
+          }))}>{(account?.type === "credit" ? item.signed > 0 ? ["refund", "cardPayment"] as const : ["expense"] as const
+            : item.signed > 0 ? ["income", "refund", "transfer"] as const : ["expense", "transfer", "cardPayment"] as const)
+            .map(t => <option key={t} value={t}>{transactionLabels[t]}</option>)}</select>
           {(item.entry.type === "transfer" || item.entry.type === "cardPayment") ? <>
-            <label>From<select value={item.entry.accountId} disabled={Boolean(item.match)} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, entry: {...r.entry, accountId: e.target.value}} : r))}>
-              {ledger.accounts.filter(a => a.type !== "credit").map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-            <label>To<select value={item.entry.toId} disabled={Boolean(item.match)} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, entry: {...r.entry, toId: e.target.value}} : r))}>
-              {ledger.accounts.filter(a => item.entry.type === "cardPayment" ? a.type === "credit" : a.type !== "credit").map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+            <label>From<select value={item.entry.accountId} disabled={Boolean(item.match) || item.signed < 0} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, entry: {...r.entry, accountId: e.target.value}} : r))}>
+              <option value="">Choose funding account</option>{ledger.accounts.filter(a => a.type !== "credit" && a.id !== item.entry.toId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+            <label>To<select value={item.entry.toId} disabled={Boolean(item.match) || item.signed > 0} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, entry: {...r.entry, toId: e.target.value}} : r))}>
+              <option value="">Choose receiving account</option>{ledger.accounts.filter(a => a.id !== item.entry.accountId && (item.entry.type === "cardPayment" ? a.type === "credit" : a.type !== "credit")).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
           </> : <select aria-label={"Row " + (i + 1) + " category"} value={item.entry.category} disabled={Boolean(item.match)}
           onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, entry: {...r.entry, category: e.target.value}} : r))}>
           {(item.entry.type === "income" ? ledger.categories.income : ledger.categories.expense).map(c => <option key={c}>{c}</option>)}</select>}</td><td>{money(minor(item.entry.amount))}</td>
-        <td><select aria-label={"Row " + (i + 1) + " match"} value={item.match} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, match: e.target.value, selected: !e.target.value} : r))}>
-          <option value="">Create reviewed entry</option>{statementMatches(ledger, item).map(t =>
-            <option value={t.id} key={t.id}>{t.note || t.type} · {t.type}</option>)}</select>{item.possible && !item.match && <small>Similar entry exists. Check before importing.</small>}</td></tr>)}</Table>
-      <button className="primary" disabled={busy || working || !file} onClick={async () => {
-        if (!file) return;
+        <td><select aria-label={"Row " + (i + 1) + " match"} value={item.match} onChange={e => setStaged(old => old.map((r, j) => i === j ? {...r, match: e.target.value, selected: false} : r))}>
+          <option value="">Create new entry if included</option>{statementMatches(ledger, item).map(t =>
+            <option value={t.id} key={t.id}>{t.note || t.type} · {transactionLabels[t.type]}</option>)}</select>{item.possible && !item.match && <small>Review before including this row.</small>}</td></tr>;
+      })}</Table>
+      {staged.length > 40 && <div className="button-row"><button disabled={!page} onClick={() => setPage(page - 1)}>Previous rows</button>
+        <span>Page {page + 1} of {Math.ceil(staged.length / 40)}</span><button disabled={(page + 1) * 40 >= staged.length} onClick={() => setPage(page + 1)}>Next rows</button></div>}
+      {missingCounterpart && <p role="status">Choose the other account for each transfer or card repayment you include.</p>}
+      {repeatedMatch && <p role="status">Two rows match the same recorded entry. Change one of the matches before importing.</p>}
+      <button className="primary" disabled={busy || working || !file || !selected || missingCounterpart || repeatedMatch} onClick={async () => {
+        if (!file || !columns || saving.current) return;
+        saving.current = true;
         setWorking(true);setError("");
         try {
           const id = await documentDigest(file.bytes);
+          const originals = await deviceRecord<{id:string; accountId?:string; outcomes?:Record<string,string>}[]>(scope,"document-index",vaultKey) ?? [];
+          const previous = originals.find(item => item.id === id);
+          if (previous?.accountId && previous.accountId !== accountId)
+            throw Error("This statement is already assigned to " + accountName(ledger, previous.accountId) + ".");
           await deviceRecord(scope,"original-" + id,vaultKey,base64(new Uint8Array(file.bytes)));
-          const batch = {id,name:file.name,kind:"Statement" as const,pages:[file.text],date:asOf,accountId,staged};
-          await saveDocumentIndex(scope,vaultKey,batch);
+          const batch = {id,name:file.name,kind:"Statement" as const,pages:file.pages,date:asOf,accountId,staged,statementMapping:{columns,dateOrder,debitPositive}};
+          if (!previous) await saveDocumentIndex(scope,vaultKey,batch);
           if (await save(s => importStatement(s,staged.map(line => ({...line,entry:{...line.entry,importDocumentId:id,importRowKey:rowKey(line)}})),file.name,"",asOf,false),true)) {
-            setStaged([]);
+            setStaged([]);setFile(null);setColumns(null);
+            setNotice(selected + (selected === 1 ? " row" : " rows") + " imported or matched. The encrypted original is in Documents.");
             const outcomes = Object.fromEntries(staged.filter(line => line.selected || line.match).map(line => [rowKey(line),line.match || line.entry.id]));
-            await saveDocumentIndex(scope,vaultKey,{...batch,staged:staged.filter(line => !outcomes[rowKey(line)]),outcomes});
+            await saveDocumentIndex(scope,vaultKey,{...batch,staged:staged.filter(line => !outcomes[rowKey(line)]),outcomes:{...previous?.outcomes,...outcomes}});
           }
         } catch (problem) {setError(problem instanceof Error ? problem.message : "Could not save the local statement.");}
-        finally {setWorking(false);}
+        finally {saving.current = false;setWorking(false);}
       }}>Import reviewed statement</button></>}
     </Panel>
-    <Panel title="Confirm current balance"><p className="muted">{account ? account.name + " · recorded " + money(balance(ledger, account, asOf)) : "Choose an account"}</p>
+    {password && <Editor title="Unlock statement PDF" busy={false} close={() => {password.cancel();setPassword(null);passwordRef.current = null;}} submit="Unlock PDF"
+      onSave={async data => {password.resolve(value(data,"pdfPassword"));setPassword(null);passwordRef.current = null;return true;}}>
+      {password.wrong && <p role="alert">Incorrect password. Try again.</p>}
+      <label>PDF password<input name="pdfPassword" type="password" autoComplete="off" required /></label>
+    </Editor>}
+    {account && <Panel title="Confirm current balance"><p className="muted">{account.name + " · recorded " + money(balance(ledger, account, asOf))}</p>
       <form className="filter-row" key={accountId} onSubmit={e => {e.preventDefault();const data = new FormData(e.currentTarget);void save(s => reconcileBalance(s, accountId, amount(data, "balance"), value(data, "date"), asOf));}}>
         <Input name="balance" label="Bank / card confirmed balance ₹" /><Input name="date" label="Balance date" type="date" initial={asOf} max={asOf} /><button disabled={busy}>Confirm balance</button></form>
-    </Panel>
+    </Panel>}
     <Panel title="Legacy statement archive"><Table headers={["File", "Account", "Imported", ""]}>{rows(ledger.settings.statementArchives).map(item =>
       <tr key={field(item, "id")}><td>{field(item, "name")}</td><td>{accountName(ledger, item.accountId)}</td><td>{field(item, "importedAt")}</td><td><button onClick={() => download(field(item, "name"), new Blob([field(item, "text")], {type: "text/csv"}))}>Download original</button></td></tr>)}</Table>
       <p className="muted">{Object.keys(reconciled).length} entries reconciled. New originals are stored in Documents. Previously archived CSVs are included in ledger backups.</p>
@@ -260,10 +343,11 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
     return "Encrypted device backup prepared.";
   }
   return <>
-    {section === "Data, backup & security" && <><Panel title="Daily encrypted backups">
-      <p>{backups.message}</p><p className="muted">{backups.folder ? "Selected folder · " + backups.folder : "Choose a backup folder on your device."}</p>
-      <p className="muted">Copies run daily and after changes while this workspace is open and unlocked. A folder inside OneDrive may sync through your OneDrive settings.</p>
-      <p className="muted">Ledger backups include transactions and their receipts. Download a separate encrypted device backup for documents and Assistant history.</p>
+    {section === "Data, backup & security" && <><Panel title="Encrypted ledger backups">
+      <div className="backup-summary"><strong>Automatic recovery on this device</strong><span role="status">{backups.localStatus}</span></div>
+      <p className="muted">Finance Atlas keeps an encrypted recovery copy when you unlock the workspace or save changes. Clearing app storage also clears these copies.</p>
+      <p role="status">{backups.message}</p>{backups.folder && <p className="muted">Selected folder · {backups.folder}</p>}
+      <p className="muted">Ledger backups include transactions and their receipts. Documents and Assistant history have a separate encrypted backup below.</p>
       {backups.lastAt && <small>Last verified {new Date(backups.lastAt).toLocaleString("en-IN")}</small>}
       <div className="button-row section-gap"><button onClick={() => void backups.choose()}>Choose backup folder</button>
         <button disabled={!backups.folder} onClick={() => void backups.toggle()}>{backups.enabled ? "Pause" : "Enable"} daily backups</button>
@@ -291,7 +375,12 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
     {section === "Appearance & navigation" && <Panel title="Appearance">
       <div className="appearance-controls"><span><strong>Workspace theme</strong><small className="muted">The same palette across dashboards, forms and menus.</small></span>
         <div className="segmented" aria-label="Workspace theme">{["light", "dark"].map(theme => <button key={theme} aria-label={"Use " + theme + " theme"} disabled={busy} aria-pressed={(field(row(ledger.settings.appearance), "theme") || "light") === theme} onClick={() => save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), theme}}}))}>{theme === "light" ? "Light" : "Dark"}</button>)}</div></div>
-      <div className="motion-control"><label><input type="checkbox" checked={row(ledger.settings.appearance).reduceMotion === true} disabled={busy} onChange={event => {const reduceMotion = event.target.checked;void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), reduceMotion}}}));}} />Reduce animations</label><small className="muted">Your device’s reduced-motion preference is always respected.</small></div>
+      <Switch.Root unstyled className="atlas-setting-switch" checked={row(ledger.settings.appearance).reduceMotion === true} disabled={busy}
+        onCheckedChange={({checked}) => void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), reduceMotion: checked}}}))}>
+        <Switch.HiddenInput aria-describedby="motion-description" />
+        <div><Switch.Label>Reduce animations</Switch.Label><small className="muted" id="motion-description">Limits interface motion in Finance Atlas. Your device’s reduced-motion preference always applies.</small></div>
+        <Switch.Control><Switch.Thumb /></Switch.Control>
+      </Switch.Root>
     </Panel>}
     {section === "Finance & automation" && <><Panel title="Reporting and reminders"><form key={JSON.stringify([ledger.settings.reportingPeriod, cfg])} onSubmit={event => {event.preventDefault();const data = new FormData(event.currentTarget);void save(s => ({
         ...s, settings: {...s.settings, reportingPeriod: {mode: value(data, "mode"), day: Number(value(data, "day"))},

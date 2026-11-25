@@ -25,34 +25,44 @@ jobs:
             package-lock.json
             api/package-lock.json
       - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - run: npm run check
-      - run: npm run test:browser
       - run: npm ci --prefix api
-      - run: npm test --prefix api
+      - run: npm run eval -- --suite web
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-evaluation
+          path: artifacts/atlas-eval/web/results.json
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit --prefix api --omit=dev --audit-level=high
 
   worker:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-      - run: python -m pip install --require-hashes -r requirements.txt
+          cache-dependency-path: agent/requirements.txt
+      - run: npm ci --prefix api
+      - run: python -m pip install --require-hashes -r agent/requirements.txt
       - run: python -m pip check
-      - run: python -m unittest discover -v
+      - run: npm run eval -- --suite worker
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-evaluation
+          path: artifacts/atlas-eval/worker/results.json
       - name: Audit the locked Python dependencies
         run: |
           python -m venv "$RUNNER_TEMP/atlas-pip-audit"
           "$RUNNER_TEMP/atlas-pip-audit/bin/python" -m pip install pip-audit==2.10.1
-          "$RUNNER_TEMP/atlas-pip-audit/bin/pip-audit" -r requirements.txt --require-hashes --disable-pip --progress-spinner off
+          "$RUNNER_TEMP/atlas-pip-audit/bin/pip-audit" -r agent/requirements.txt --require-hashes --disable-pip --progress-spinner off
 
   container-audit:
     runs-on: ubuntu-latest
