@@ -84,9 +84,11 @@ $env:NEXT_PUBLIC_ATLAS_FIREBASE_API_KEY = 'your-firebase-browser-api-key'
 $env:NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT = $atlasProject
 $env:NEXT_PUBLIC_ATLAS_FIREBASE_AUTH_DOMAIN = $atlasSiteHost
 $env:NEXT_PUBLIC_ATLAS_ORIGIN = "https://$atlasSiteHost"
+$env:ATLAS_HOSTING_SITE_ID = $atlasSiteHost -replace '\.web\.app$', ''
+$env:ATLAS_RELEASE_SHA = (git rev-parse HEAD).Trim()
 $env:NEXT_TELEMETRY_DISABLED = '1'
 npm.cmd run build
-npx.cmd --yes firebase-tools@latest deploy --only hosting,firestore:rules --project $atlasProject
+npx.cmd --yes firebase-tools@15.37.0 deploy --only hosting,firestore:rules --config firebase.release.json --project $atlasProject
 npm.cmd run desktop:build
 ```
 

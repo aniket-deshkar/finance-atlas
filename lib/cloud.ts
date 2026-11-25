@@ -1,5 +1,4 @@
-import {initializeApp} from "firebase/app";
-import {browserPopupRedirectResolver, GoogleAuthProvider, inMemoryPersistence, initializeAuth, onAuthStateChanged, signInWithCustomToken, signInWithPopup, signOut, type Auth} from "firebase/auth";
+import type {Auth} from "firebase/auth";
 import {desktopInvoke, isDesktop} from "./desktop";
 import {base64} from "./files";
 
@@ -9,14 +8,22 @@ const projectId = process.env.NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT;
 const origin = process.env.NEXT_PUBLIC_ATLAS_ORIGIN;
 export const cloudConfigured = Boolean(apiKey && authDomain && projectId && origin && /^https:\/\/[a-z0-9-]+\.web\.app$/.test(origin));
 let auth: Auth | undefined;
+let sdk: Promise<{client: Auth; firebase: typeof import("firebase/auth")}> | undefined;
 
-function getCloudAuth() {
+async function getCloudAuth() {
   if (!cloudConfigured) throw Error("Cloud access has not been configured for this build.");
-  auth ??= initializeAuth(initializeApp({apiKey, authDomain, projectId}, "finance-atlas-cloud"), {
-    persistence: inMemoryPersistence,
-    ...(isDesktop() ? {} : {popupRedirectResolver: browserPopupRedirectResolver})
+  sdk ??= Promise.all([import("firebase/app"), import("firebase/auth")]).then(([app, firebase]) => {
+    const client = firebase.initializeAuth(app.initializeApp({apiKey, authDomain, projectId}, "finance-atlas-cloud"), {
+      persistence: firebase.inMemoryPersistence,
+      ...(isDesktop() ? {} : {popupRedirectResolver: firebase.browserPopupRedirectResolver})
+    });
+    auth = client;
+    return {client, firebase};
+  }).catch(error => {
+    sdk = undefined;
+    throw error;
   });
-  return auth;
+  return sdk;
 }
 
 function toUrlBase64(bytes: Uint8Array) {
@@ -25,10 +32,11 @@ function toUrlBase64(bytes: Uint8Array) {
 
 export async function connectCloud(signal: AbortSignal) {
   if (!isDesktop() && window.location.origin !== origin) throw Error("Open the configured Finance Atlas cloud site to sign in.");
-  const client = getCloudAuth();
+  const {client, firebase} = await getCloudAuth();
   try {
+    signal.throwIfAborted();
     if (!isDesktop()) {
-      await signInWithPopup(client, new GoogleAuthProvider());
+      await firebase.signInWithPopup(client, new firebase.GoogleAuthProvider());
     } else {
       const verifier = toUrlBase64(crypto.getRandomValues(new Uint8Array(32)));
       const state = toUrlBase64(crypto.getRandomValues(new Uint8Array(32)));
@@ -39,24 +47,33 @@ export async function connectCloud(signal: AbortSignal) {
       const response = await cloudFetch("/v1/auth/desktop/exchange", json({code, verifier}, signal), false);
       const {token} = await checkedJson<{token: string}>(response);
       signal.throwIfAborted();
-      await signInWithCustomToken(client, token);
+      await firebase.signInWithCustomToken(client, token);
     }
     signal.throwIfAborted();
     await checkedJson(await cloudFetch("/v1/sync/head", {signal}));
   } catch (error) {
-    await signOut(client);
+    await firebase.signOut(client);
     throw error;
   }
 }
 
 export async function disconnectCloud() {
-  if (auth) await signOut(auth);
+  if (sdk) {
+    const {client, firebase} = await getCloudAuth();
+    await firebase.signOut(client);
+  }
 }
 
 export const cloudConnected = () => Boolean(auth?.currentUser);
 
 export function watchCloudConnection(listener: (connected: boolean) => void) {
-  return cloudConfigured ? onAuthStateChanged(getCloudAuth(), user => listener(Boolean(user))) : () => {};
+  if (!cloudConfigured) return () => {};
+  let closed = false;
+  let stop: (() => void) | undefined;
+  void getCloudAuth().then(({client, firebase}) => {
+    if (!closed) stop = firebase.onAuthStateChanged(client, user => {if (!closed) listener(Boolean(user));});
+  }).catch(() => {if (!closed) listener(false);});
+  return () => {closed = true;stop?.();};
 }
 
 export function json(body: unknown, signal?: AbortSignal): RequestInit {
@@ -68,9 +85,10 @@ export async function cloudFetch(path: string, init: RequestInit = {}, authorize
     throw Error("Open the configured Finance Atlas cloud site to use this feature.");
   const headers = new Headers(init.headers);
   if (authorized) {
-    const user = getCloudAuth().currentUser;
+    const user = (await getCloudAuth()).client.currentUser;
     if (!user) throw Error("Connect to Google Cloud first.");
     headers.set("Authorization", "Bearer " + await user.getIdToken());
+    init.signal?.throwIfAborted();
   }
   return fetch(origin + path, {...init, headers, cache: "no-store", credentials: "omit", redirect: "error"});
 }

@@ -5,10 +5,11 @@
   "version": "0.2.1",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/prepare-hosting.mjs",
     "check": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
     "test:browser": "node tests/browser-smoke.mjs",
+    "verify:hosting": "node scripts/verify-hosting.mjs",
     "desktop:dev": "node scripts/desktop.mjs dev",
     "desktop:build": "node scripts/desktop.mjs build",
     "desktop:check": "node scripts/desktop.mjs check",

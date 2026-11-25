@@ -5,7 +5,7 @@ const availableModels = [
   {id: "gpt-6.1-terra", label: "GPT-6.1 Terra", provider: "Vertex AI private preview", levels: [], fallback: "", unavailable: "Requires a verified private-preview adapter. Direct OpenAI is disabled."}
 ];
 const ref = /^[a-z][a-z0-9-]{0,65}$/;
-const requestId = /^[a-f0-9-]{36}$/i;
+const requestId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const maximum = 768;
 const knownFields = new Set(["income", "spending", "savings", "liquidBalance", "cardOutstanding", "cashOutflow", "expectedOutflow", "projected", "due", "count",
   "fundingNeeded", "shortfall", "budgeted", "invested", "marketValue", "valuedCount", "linkedCosts", "salary", "interest", "tds", "estimatedTaxOld", "estimatedTaxNew", "debit", "credit"]);
@@ -22,10 +22,11 @@ export function assistantCatalog(config) {
 }
 
 export function validateChat(body, catalog) {
-  if (!body || Object.keys(body).some(key => !["id", "model", "reasoning", "question", "context", "history"].includes(key))) return null;
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some(key => !["id", "model", "reasoning", "question", "context", "history"].includes(key))) return null;
   const {id, reasoning, question, context, history} = body;
   const model = catalog.find(item => item.id === body.model && item.enabled);
-  if (!requestId.test(id || "") || !model?.levels.includes(reasoning) || typeof question !== "string" || !question.trim() || question.length > 1600 ||
+  if (typeof id !== "string" || !requestId.test(id) || !model?.levels.includes(reasoning) || typeof question !== "string" || !question.trim() || question.length > 1600 ||
       !Array.isArray(context) || context.length > 6 || !Array.isArray(history) || history.length > 4) return null;
   for (const item of context) {
     if (!item || Object.keys(item).some(key => !["ref", "start", "end", "values"].includes(key)) || typeof item.ref !== "string" || !ref.test(item.ref) ||
@@ -110,7 +111,7 @@ export function registerAssistant(app, owner, {catalog, usage, invoke, research}
     const phrase = /^[\p{L}\p{N} .,&()’'/-]{2,100}$/u;
     const model = catalog.find(item => item.id === research.model && item.enabled);
     if (!model) return reply.code(503).send({error: "The policy research model is unavailable."});
-    if (!requestId.test(id || "") || [insurer, product].some(value => typeof value !== "string" || !phrase.test(value) || /\d{7}/.test(value)) ||
+    if (typeof id !== "string" || !requestId.test(id) || [insurer, product].some(value => typeof value !== "string" || !phrase.test(value) || /\d{7}/.test(value)) ||
         typeof uin !== "string" || (uin && !/^\d{3}[A-Z]\d{3}V\d{2}\d{4}$/i.test(uin)))
       return reply.code(400).send({error: "Enter the public insurer and product name and the IRDAI UIN if available."});
     const metadata = {id, model: model.id, reasoning: model.fallback, estimate: usdMicros(2500, 768, model) + 70_000, kind: "policy"};

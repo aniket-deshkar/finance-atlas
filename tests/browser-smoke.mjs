@@ -10,9 +10,9 @@ import {selectLockedPdf} from "./pdf-fixture.mjs";
 const out = fileURLToPath(new URL("../out/", import.meta.url));
 const chrome = process.env.ATLAS_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const scratch = mkdtempSync(resolve(tmpdir(), "atlas-next-smoke-"));
-const config = JSON.parse(readFileSync(new URL("../firebase.json", import.meta.url), "utf8"));
+const config = JSON.parse(readFileSync(new URL("../firebase.release.json", import.meta.url), "utf8"));
 const hostingHeaders = Object.fromEntries(config.hosting.headers[0].headers.map(header => [header.key, header.value]));
-let browser, socket;
+let browser, socket, recoveryServer;
 const mime = { html: "text/html; charset=utf-8", js: "application/javascript", mjs: "application/javascript", css: "text/css", json: "application/json", ico: "image/x-icon" };
 const server = createServer((request, response) => {
   const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
@@ -90,6 +90,11 @@ async function main() {
   }
   const click = label => evaluate("Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === " +
     JSON.stringify(label) + " || b.getAttribute('aria-label') === " + JSON.stringify(label) + ").click()");
+  const key = async (key, code, windowsVirtualKeyCode) => {
+    const options = {key, code, windowsVirtualKeyCode};
+    await send("Input.dispatchKeyEvent", {type:key === "Enter" ? "keyDown" : "rawKeyDown", ...options, ...(key === "Enter" ? {text:"\r"} : {})});
+    await send("Input.dispatchKeyEvent", {type:"keyUp", ...options});
+  };
   const set = (selector, value) => evaluate("document.querySelector(" + JSON.stringify(selector) + ").value = " + JSON.stringify(value));
   const submit = () => evaluate("document.querySelector('form').requestSubmit()");
   await send("Runtime.enable");
@@ -299,7 +304,7 @@ async function main() {
   await click("Transactions");
   assert.equal(await evaluate("Array.from(document.querySelectorAll('tr')).some(el=>el.innerText.includes('Stale write must fail'))"), false);
   await click("Dashboard");
-  for (const [width, height, deviceScaleFactor] of [[1440, 900, 1], [1536, 864, 1.25], [1280, 720, 1.5], [1366, 768, 1], [1024, 768, 1], [768, 1024, 1], [430, 932, 1], [390, 844, 1]]) {
+  for (const [width, height, deviceScaleFactor] of [[1440, 900, 1], [1536, 864, 1.25], [1280, 720, 1.5], [1366, 768, 1], [1024, 768, 1], [768, 1024, 1], [430, 932, 1], [390, 844, 1], [320, 700, 1]]) {
     await send("Emulation.setDeviceMetricsOverride", {width, height, deviceScaleFactor, mobile: false});
     assert.equal(await evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"), true, width + "px layout");
     assert.equal(await evaluate("document.querySelector('.balance-hero').getBoundingClientRect().top < innerHeight"), true, "Liquid balance visible at " + width);
@@ -315,6 +320,19 @@ async function main() {
       writeFileSync(process.env.ATLAS_SCREENSHOT_MOBILE, Buffer.from(shot.data, "base64"));
     }
     if (width === 390) {
+      assert.equal(await evaluate("document.querySelector('.topbar .atlas-assistant-fab') !== null"), true);
+      await evaluate("document.querySelector('[aria-label=\"Open navigation\"]').focus()");
+      await key("Enter", "Enter", 13);
+      await until("document.activeElement.textContent === 'Close navigation' && document.querySelector('main').inert");
+      await key("Tab", "Tab", 9);
+      assert.equal(await evaluate("document.activeElement.closest('#workspace-sidebar') !== null"), true);
+      await key("Escape", "Escape", 27);
+      await until("document.activeElement.getAttribute('aria-label') === 'Open navigation' && !document.querySelector('main').inert");
+      await click("Hide amounts");
+      await until("document.querySelector('.workspace').dataset.private === 'true'");
+      assert.equal(await evaluate("document.querySelector('.cash-bars') === null && !document.querySelector('.atlas-overview').textContent.includes('₹')"), true);
+      await click("Show amounts");
+      await until("document.querySelector('.workspace').dataset.private === 'false' && !!document.querySelector('.cash-bars')");
       assert.equal(await evaluate("document.querySelector('.topbar .search').getBoundingClientRect().width <= 40"), true, "Mobile search starts as an icon");
       await evaluate("document.querySelector('.topbar .search input').focus()");
       const mobileSearchWidth = await evaluate("document.querySelector('.topbar .search').getBoundingClientRect().width");
@@ -428,9 +446,51 @@ async function main() {
   await until("document.querySelector('h1')?.textContent === 'Dashboard'");
   await click("Accounts");
   assert.equal(await evaluate("document.body.innerText.includes('Synthetic cash')"), true, "Auto-lock preserves the saved vault");
+  await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent === 'Edit / confirm balance').focus()");
+  await key("Enter", "Enter", 13);
+  await until("document.querySelector('dialog[open]')?.getAttribute('aria-labelledby')");
+  assert.match(await evaluate("document.getElementById(document.querySelector('dialog[open]').getAttribute('aria-labelledby')).textContent"), /Account & balance/);
+  await key("Escape", "Escape", 27);
+  await until("document.activeElement.textContent === 'Edit / confirm balance'");
+
+  await send("Browser.setDownloadBehavior", {behavior:"allow", downloadPath:scratch});
+  await click("Settings");
+  await click("Data, backup & security");
+  await click("Download device backup");
+  const deviceFile = resolve(scratch, "Finance_Atlas_Device_" + sampleDate + ".atlasdevice");
+  for (let attempt = 0; attempt < 80 && !existsSync(deviceFile); attempt++)
+    await new Promise(resolve => setTimeout(resolve, 100));
+  const backup = readFileSync(deviceFile, "utf8");
+  assert.equal(JSON.parse(backup).format, "finance-atlas-device-backup-v1");
+  assert.ok(!backup.includes("What are my savings?") && !backup.includes("test-locked.pdf"));
   assert.deepEqual(errors, []);
   assert.deepEqual(remote, []);
-  console.log("Production build verified across all screens on desktop and mobile. Bills, EMI payments, lending recoveries, budgets, card settlement, reload, encrypted restore and stale-write rejection passed with fictional records.");
+
+  recoveryServer = createServer(server.listeners("request")[0]);
+  await new Promise(resolve => recoveryServer.listen(0, "127.0.0.1", resolve));
+  await send("Page.navigate", {url:"http://127.0.0.1:" + recoveryServer.address().port});
+  await until("!!document.querySelector('[name=confirm]')");
+  await set("[name=passphrase]", "synthetic-destination-secret");
+  await set("[name=confirm]", "synthetic-destination-secret");
+  await submit();
+  await until("document.querySelector('h1')?.textContent === 'Dashboard'");
+  await click("Settings");
+  await click("Data, backup & security");
+  await evaluate("(() => {const data = new DataTransfer();data.items.add(new File([" +
+    JSON.stringify(backup) + "], 'test.atlasdevice'));const input = document.querySelector('[name=deviceBackup]');input.files = data.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await until("!!document.querySelector('dialog[open]')");
+  await set("dialog [name=passphrase]", "invalid-test-passphrase");
+  await click("Restore device library");
+  await until("document.querySelector('dialog').textContent.includes('passphrase is incorrect')");
+  await set("dialog [name=passphrase]", "only-fictional-test-secret-123");
+  await click("Restore device library");
+  await until("document.body.innerText.includes('encrypted device records restored') && !document.querySelector('dialog[open]')");
+  await click("Assistant");
+  await until("document.querySelector('[role=log]')?.textContent.includes('What are my savings?')");
+  await click("Accounts");
+  assert.equal(await evaluate("document.body.innerText.includes('Synthetic cash')"), false, "Device-library restore does not overwrite the destination ledger");
+  assert.deepEqual(errors, []);
+  console.log("Production build verified on desktop and mobile. Keyboard navigation, privacy, local ledger, encrypted device recovery, and stale-write rejection passed with fictional records.");
 }
 
 try { await main(); }
@@ -438,6 +498,7 @@ finally {
   socket?.close();
   browser?.kill();
   server.close();
+  recoveryServer?.close();
   if (scratch.startsWith(resolve(tmpdir()) + sep)) {
     try { rmSync(scratch, {recursive: true, force: true, maxRetries: 5, retryDelay: 150}); } catch {}
   }

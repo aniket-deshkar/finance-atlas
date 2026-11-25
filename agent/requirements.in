@@ -1,0 +1,5 @@
+google-adk==2.14.0
+google-genai>=2.34.0,<3
+fastapi>=0.115,<1
+pydantic>=2,<3
+uvicorn>=0.30,<1

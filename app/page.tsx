@@ -67,7 +67,7 @@ function AccountForm({ save, asOf }: { save: (command: (ledger: Ledger) => Ledge
     if (ok) form.reset();
   }}>
     <label>Account name<input name="name" required maxLength={100} /></label>
-    <label>Type<select value={type} onChange={event => setType(event.target.value as Account["type"])}>
+    <label>Type<select name="accountType" value={type} onChange={event => setType(event.target.value as Account["type"])}>
       <option value="bank">Bank</option><option value="cash">Cash</option><option value="credit">Credit card</option>
     </select></label>
     <label>Opening date<input name="date" type="date" required max={asOf} defaultValue={asOf} /></label>
@@ -161,13 +161,16 @@ export default function Page() {
   }, [selectedTheme]);
   const [view, setView] = useState<View>("Overview");
   const [navDrawer, setNavDrawer] = useState(false);
+  const navTrigger = useRef<HTMLButtonElement>(null);
   const [settingsSection, setSettingsSection] = useState("Appearance & navigation");
   const [cloudMount, setCloudMount] = useState<HTMLDivElement | null>(null);
+  const [assistantMount, setAssistantMount] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!navDrawer) return;
-    const close = (event: KeyboardEvent) => {if (event.key === "Escape") setNavDrawer(false);};
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
+    const desktopLayout = window.matchMedia("(min-width: 901px)");
+    const close = () => {if (desktopLayout.matches) setNavDrawer(false);};
+    desktopLayout.addEventListener("change", close);
+    return () => desktopLayout.removeEventListener("change", close);
   }, [navDrawer]);
   const [month, setMonth] = useState("");
   const [clockDay, setClockDay] = useState(today);
@@ -433,6 +436,12 @@ export default function Page() {
     setError("");
     setNotice("");
     window.scrollTo({top: 0});
+    if (navDrawer) requestAnimationFrame(() => document.querySelector<HTMLElement>("#workspace-heading")?.focus());
+  }
+
+  function closeNavigation() {
+    setNavDrawer(false);
+    requestAnimationFrame(() => navTrigger.current?.focus());
   }
 
   function goBack() {
@@ -493,7 +502,7 @@ export default function Page() {
       <p className="login-foot">Encrypted storage on this device</p>
     </section>
     <section className="login-form"><p className="eyebrow">FINANCE ATLAS {desktop ? "DESKTOP" : "WEB PILOT"}</p><h2>{existing ? "Unlock your workspace" : welcomeHead ? "Unlock your cloud workspace" : welcomeConnected ? "Create your workspace" : "Create a local workspace"}</h2>
-      <p className="muted">Use your vault passphrase on this device. Keep a separate backup and a copy of your passphrase.</p>
+      <p className="muted">Your vault passphrase unlocks your records on this device. Google sign-in connects optional cloud services.</p>
       {cloudConfigured && existing === null && (welcomeConnected
         ? <button type="button" disabled={busy} onClick={() => {
           void disconnectCloud().then(() => {setWelcomeHead(null);setWelcomeConnected(false);setError("");}).catch(problem => setError(describe(problem)));
@@ -524,35 +533,41 @@ export default function Page() {
   return <div className="workspace" data-nav={placement === "compact" ? "left" : placement} data-collapsed={collapsed} data-motion={reduceMotion ? "reduced" : "full"} data-theme={row(ledger.settings.appearance).theme === "dark" ? "dark" : "light"} data-private={row(ledger.settings.appearance).private === true}>
     <BackgroundArt />
     <Sidebar ledger={ledger} view={view} collapsed={collapsed} hasSidebar={hasSidebar} busy={busy} drawer={navDrawer}
-      navigate={navigate} close={() => setNavDrawer(false)} lock={lock} toggle={() => void save(s => ({...s,
+      navigate={navigate} close={closeNavigation} lock={lock} toggle={() => void save(s => ({...s,
         settings: {...s.settings, uiCustomization: {...row(s.settings.uiCustomization), sidebarCollapsed: !collapsed}}}))} />
-    <main className="content">
+    <main className="content" inert={navDrawer}>
+      <a className="skip-link" href="#workspace-heading">Skip to main content</a>
       <header className="topbar">
-        <div className="topbar-leading">{hasSidebar && <button className="icon-button atlas-nav-trigger" aria-label="Open navigation" aria-expanded={navDrawer} onClick={() => setNavDrawer(!navDrawer)}><Icon name="menu" /></button>}
+        <div className="topbar-leading">{hasSidebar && <button ref={navTrigger} className="icon-button atlas-nav-trigger" aria-label="Open navigation" aria-controls="workspace-sidebar" aria-expanded={navDrawer} onClick={() => setNavDrawer(true)}><Icon name="menu" /></button>}
         <button className="back-button" aria-label="Go back" title="Back to the previous section" disabled={!entryOpen && backDepth === 0 && view === "Overview"} onClick={goBack}><Icon name="left" /><span>Back</span></button>
-        <label className="search"><span className="sr-only">Search transactions</span><Icon name="search" /><input type="search" value={search} placeholder="Search"
-          onChange={event => {setSearch(event.target.value); if (view !== "Transactions") navigate("Transactions");}} /></label></div>
+        {!privacy && <label className="search"><span className="sr-only">Search transactions</span><Icon name="search" /><input name="transactionSearch" autoComplete="off" type="search" value={search} placeholder="Search"
+          onChange={event => {setSearch(event.target.value); if (view !== "Transactions") navigate("Transactions");}} /></label>}</div>
         <div className="topbar-actions"><PeriodPicker key={view}>
         <span className="eyebrow">REPORTING PERIOD</span><div className="period-control"><button aria-label="Previous period" onClick={() => setMonth(monthShift(month, -1))}>‹</button>
           <strong>{monthLabel(month)}</strong><button aria-label="Next period" onClick={() => setMonth(monthShift(month, 1))}>›</button>
           </div><button className="quiet" onClick={() => setMonth(currentMonth(ledger, asOf))}>Current period</button></PeriodPicker>
         <button className="icon-button" aria-label="View card statements and payment dues" onClick={() => navigate("Card statements")}><Icon name="bell" /></button>
         <button className="icon-button" aria-label={row(ledger.settings.appearance).private ? "Show amounts" : "Hide amounts"} aria-pressed={row(ledger.settings.appearance).private === true}
-          disabled={busy} onClick={() => void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), private: !row(s.settings.appearance).private}}}))}><Icon name="eye" /></button>
-        <button className="icon-button" aria-label="Settings" title="Settings" aria-current={view === "Data & settings" ? "page" : undefined} onClick={() => navigate("Data & settings")}><Icon name="settings" /></button></div>
+          disabled={busy} onClick={() => {setSearch("");void save(s => ({...s, settings: {...s.settings, appearance: {...row(s.settings.appearance), private: !row(s.settings.appearance).private}}}));}}><Icon name="eye" /></button>
+        <button className="icon-button" aria-label="Settings" title="Settings" aria-current={view === "Data & settings" ? "page" : undefined} onClick={() => navigate("Data & settings")}><Icon name="settings" /></button>
+        <div ref={setAssistantMount} className="assistant-launch-slot" />
+        </div>
       </header>
-      <div className="page-title atlas-content-enter" key={view}><div><h1>{view === "Overview" ? "Dashboard" : view === "Data & settings" ? "Settings" : view}</h1>
+      <div className="page-title atlas-content-enter" key={view}><div><h1 id="workspace-heading" tabIndex={-1}>{view === "Overview" ? "Dashboard" : view === "Data & settings" ? "Settings" : view}</h1>
         <p className="muted">{period.basis} · {formatDate(period.start)} to {formatDate(period.end)}</p></div>
-        {!["Data & settings", "Assistant", "Documents", "Tax", "Vehicles", "Investments"].includes(view) && <button className="primary" disabled={busy} onClick={() => {navigate(ledger.accounts.length ? "Transactions" : "Accounts");setEntryOpen(Boolean(ledger.accounts.length));}}>
+        {!privacy && !["Data & settings", "Assistant", "Documents", "Tax", "Vehicles", "Investments"].includes(view) && <button className="primary" disabled={busy} onClick={() => {navigate(ledger.accounts.length ? "Transactions" : "Accounts");setEntryOpen(Boolean(ledger.accounts.length));}}>
           {ledger.accounts.length ? "+ New transaction" : "Set up an account"}
         </button>}</div>
-      {error && <p className="error" role="alert">{error}</p>}
-      {notice && <p className="notice" role="status">{notice}</p>}
-      <div hidden={view !== "Overview"}><Overview ledger={ledger} month={month} asOf={asOf} navigate={navigate} selectMonth={setMonth} attention={<>
+      {error && <p className="error" role="alert">{privacy ? "The action could not be completed. Show amounts to see details." : error}</p>}
+      {notice && !privacy && <p className="notice" role="status">{notice}</p>}
+      <div hidden={view !== "Overview"}><Overview ledger={ledger} month={month} asOf={asOf} privacy={privacy} navigate={navigate} selectMonth={setMonth} attention={<>
         <AttentionPanel {...featureProps} visible={view === "Overview"} privacy={privacy} cloudMount={cloudMount}
-          envelope={session.envelope} navigate={navigate} restore={restoreCloud} reissue={reissueCloudRevision} />
-        {view === "Overview" && <DocumentReviewCount {...deviceProps} onOpen={openDocuments} />}
+          envelope={session.envelope} vaultKey={session.key} navigate={navigate} restore={restoreCloud} reissue={reissueCloudRevision} />
+        {view === "Overview" && !privacy && <DocumentReviewCount {...deviceProps} onOpen={openDocuments} />}
       </>} /></div>
+      {privacy ? view !== "Overview" && view !== "Assistant" && <section className="panel">
+        <h2>Workspace details are hidden</h2><p>Use Show amounts in the toolbar to view details, or lock the workspace to end the session.</p>
+      </section> : <>
       {view === "Transactions" && <div className="stack">
         {entryOpen && <Section title="New transaction"><fieldset disabled={busy}><TransactionForm {...featureProps} close={() => setEntryOpen(false)} /></fieldset></Section>}
         <LedgerHistory {...featureProps} search={search} openReceipts={() => navigate("Receipts")} />
@@ -602,9 +617,9 @@ export default function Page() {
             if (await save(() => preview, true)) {setMonth(currentMonth(preview, today()));setPreview(null);}
           }}>Replace local workspace</button><button disabled={busy} onClick={() => setPreview(null)}>Cancel</button></div>
         </div>}
-        <button onClick={() => download(ledger)}>Download JSON backup</button>
-        <p className="muted">Downloaded JSON is readable. Store it in a folder you control.</p>
-      </Section>}<SettingsExtras {...featureProps} section={settingsSection} envelope={session.envelope} backups={backups} previewRestore={restored => {
+        <button onClick={() => download(ledger)}>Download unencrypted JSON</button>
+        <p className="muted">JSON is readable by anyone with the file. For private storage, use the encrypted ledger backup below.</p>
+      </Section>}<SettingsExtras {...featureProps} section={settingsSection} envelope={session.envelope} vaultKey={session.key} backups={backups} previewRestore={restored => {
         if (activeSession.current?.key === session.key && renderGeneration === sessionGeneration.current) setPreview(validateFinance(restored, today()));
       }} /></div>}
       {accountEdit && <Editor title={"Account & balance · " + accountEdit.name} {...featureProps} close={() => setAccountEdit(null)}
@@ -625,7 +640,8 @@ export default function Page() {
           if (await save(s => removeUnusedAccount(s, accountEdit.id), false, true)) setAccountEdit(null);
         }}>Remove unused account</button>
       </Editor>}
-      <Assistant key={deviceProps.scope} {...featureProps} {...deviceProps} view={view} target={focusedCard}
+      </>}
+      <Assistant key={deviceProps.scope} {...featureProps} {...deviceProps} view={view} target={focusedCard} launcher={assistantMount}
         privacy={privacy} navigate={navigate} renderDocuments={onReference => view === "Documents" || view === "Reconciliation" ?
           <p>Open the full Assistant to reference an extracted document.</p> : <DocumentsView {...featureProps} {...deviceProps} onReference={onReference} />} />
     </main>

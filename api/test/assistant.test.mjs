@@ -40,6 +40,35 @@ test("owner-only chat accepts bounded approved facts, accounts for usage and rej
   assert.equal(JSON.stringify(recorded).includes(body.question),false);
 });
 
+test("request summaries use route templates and omit payloads, tokens and supplied request IDs", async t => {
+  const events = [];
+  const api = await createApi({ownerUid:"owner", verifyToken:async () => ({uid:"owner"}), storage:{},
+    cloud:{sync:{read:async () => null}}, rateLimitEnabled:false, auditLog:event => events.push(event)});
+  t.after(() => api.close());
+  const revision = "2c8d72ab-a0e1-462c-870f-4192a186f4dd";
+  const response = await api.inject({method:"GET", url:"/v1/sync/snapshots/" + revision + "?private=hidden",
+    headers:{...auth, "x-request-id":"supplied-private-value"}});
+  assert.equal(response.statusCode,404);
+  assert.equal(events.length,1);
+  assert.equal(events[0].route,"/v1/sync/snapshots/:revision");
+  assert.equal(events[0].requestId,response.headers["x-request-id"]);
+  assert.match(events[0].requestId,/^[a-f0-9-]{36}$/);
+  assert.ok(![revision, token, "?private", "supplied-private-value"].some(value => JSON.stringify(events).includes(value)));
+});
+
+test("market refresh keeps available quotes when an upstream body exceeds its byte limit", async t => {
+  const api = await createApi({ownerUid:"owner",verifyToken:async () => ({uid:"owner"}),storage:{},rateLimitEnabled:false,
+    market:{dhanToken:"fictional", fetcher:async url => url.includes("amfiindia.com")
+      ? new Response("123; ; ;Test fund;10.54;03-Nov-2026")
+      : new Response(new Uint8Array(150_001))}
+  });
+  t.after(() => api.close());
+  const result = await api.inject({method:"POST",url:"/v1/market/quotes",headers:auth,
+    payload:{instruments:[{id:"fund",kind:"Mutual fund",code:"123"},{id:"stock",kind:"Equity",code:"456"}]}});
+  assert.equal(result.statusCode,200);
+  assert.deepEqual(result.json().quotes.map(quote => quote.id),["fund"]);
+});
+
 test("AMFI price parser ignores invalid rows and retains the published date", () => {
   const values = parseNav("000111;AAA;;Fictional fund;18.7250;15-Nov-2026\n999999;;;Invalid;not available;15-Nov-2026");
   assert.deepEqual(values.get("000111"),{price:1873,date:"2026-11-15",source:"AMFI"});

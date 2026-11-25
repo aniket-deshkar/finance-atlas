@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { amountFromInput, field, hasReversal, money, rows, type Ledger, type Row } from "../lib/ledger";
 import {
   linkExistingBill, obligations, paymentModes, recordBill, recordEmi, recordPendingCard, saveTransaction,
@@ -43,10 +43,23 @@ export function Editor({title, close, busy, error, onSave, children, submit = "S
   title: string; close: () => void; busy: boolean; error?: string; onSave?: (data: FormData) => Promise<boolean>; children: ReactNode; submit?: string
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const [localError, setLocalError] = useState("");
-  useEffect(() => { const element = dialog.current; element?.showModal(); return () => {element?.close();}; }, []);
-  return <dialog ref={dialog} className="feature-dialog" onCancel={event => {if (busy) event.preventDefault(); else close();}}>
-    <div className="dialog-heading"><h2>{title}</h2><button type="button" disabled={busy} aria-label="Close editor" onClick={close}>×</button></div>
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    const trigger = document.activeElement;
+    element?.showModal();
+    return () => {
+      element?.close();
+      requestAnimationFrame(() => {
+        if (element?.isConnected || document.querySelector("dialog[open]")) return;
+        if (trigger instanceof HTMLElement && trigger.isConnected && !trigger.matches(":disabled")) trigger.focus();
+        else document.getElementById("workspace-heading")?.focus();
+      });
+    };
+  }, []);
+  return <dialog ref={dialog} className="feature-dialog" aria-labelledby={titleId} onCancel={event => {event.preventDefault();if (!busy) close();}}>
+    <div className="dialog-heading"><h2 id={titleId}>{title}</h2><button type="button" disabled={busy} aria-label="Close editor" onClick={close}>×</button></div>
     {onSave ? <form onSubmit={async event => {
       event.preventDefault();
       setLocalError("");

@@ -1,0 +1,78 @@
+name: Deploy verified staging release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: finance-atlas-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    if: github.ref == 'refs/heads/dev'
+    uses: ./.github/workflows/checks.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ATLAS_RELEASE_SHA: ${{ github.sha }}
+      ATLAS_HOSTING_SITE_ID: ${{ vars.ATLAS_HOSTING_SITE_ID }}
+      NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT: ${{ vars.ATLAS_GCP_PROJECT }}
+      NEXT_PUBLIC_ATLAS_FIREBASE_API_KEY: ${{ vars.ATLAS_FIREBASE_WEB_API_KEY }}
+      ATLAS_PRODUCTION_PROJECT: ${{ vars.ATLAS_PRODUCTION_PROJECT }}
+      ATLAS_PRODUCTION_SITE: ${{ vars.ATLAS_PRODUCTION_SITE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Require a separate staging project and site
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$ATLAS_PRODUCTION_PROJECT" && -n "$ATLAS_PRODUCTION_SITE" ]]
+          [[ "$NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT" =~ ^[a-z][a-z0-9-]+$ && "$ATLAS_HOSTING_SITE_ID" =~ ^[a-z0-9-]+$ ]]
+          [[ "$NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT" != "$ATLAS_PRODUCTION_PROJECT" && "$ATLAS_HOSTING_SITE_ID" != "$ATLAS_PRODUCTION_SITE" ]]
+          [[ -n "$NEXT_PUBLIC_ATLAS_FIREBASE_API_KEY" ]]
+          echo "NEXT_PUBLIC_ATLAS_FIREBASE_AUTH_DOMAIN=$ATLAS_HOSTING_SITE_ID.web.app" >> "$GITHUB_ENV"
+          echo "NEXT_PUBLIC_ATLAS_ORIGIN=https://$ATLAS_HOSTING_SITE_ID.web.app" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.ATLAS_WIF_PROVIDER }}
+          service_account: ${{ vars.ATLAS_RELEASE_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Deploy worker and API
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="$NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT"
+          region=asia-south1
+          gcloud run deploy finance-atlas-agent --project "$project" --region "$region" --source agent \
+            --invoker-iam-check --no-allow-unauthenticated --timeout 45 --concurrency 4
+          gcloud run deploy finance-atlas-api --project "$project" --region "$region" --source api \
+            --no-invoker-iam-check --timeout 55 --concurrency 4 \
+            --update-env-vars "ATLAS_RELEASE_SHA=$ATLAS_RELEASE_SHA,ATLAS_HTTP_LOGGING=true"
+          worker_url="$(gcloud run services describe finance-atlas-agent --project "$project" --region "$region" --format 'value(status.url)')"
+          status="$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "$worker_url/")"
+          [[ "$status" == 401 || "$status" == 403 ]]
+          gcloud run services describe finance-atlas-agent --project "$project" --region "$region" \
+            --format 'value(status.latestReadyRevisionName)' >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services describe finance-atlas-api --project "$project" --region "$region" \
+            --format 'value(status.latestReadyRevisionName)' >> "$GITHUB_STEP_SUMMARY"
+      - name: Deploy and verify Hosting
+        run: |
+          npx --yes firebase-tools@15.37.0 deploy --only hosting --config firebase.release.json --project "$NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT" --non-interactive
+          npm run verify:hosting -- "$NEXT_PUBLIC_ATLAS_ORIGIN"
