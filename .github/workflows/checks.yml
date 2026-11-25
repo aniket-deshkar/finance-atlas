@@ -102,4 +102,25 @@ jobs:
             $process = Start-Process -FilePath $installer -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "WebView2 installation failed with exit code $($process.ExitCode)." }
           }
-      - run: node tests/desktop-smoke.mjs
+      - name: Run WebView2 smoke test without elevation
+        shell: pwsh
+        run: |
+          # WebView2 ignores external debugger flags for elevated hosts.
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            node tests/desktop-smoke.mjs
+            exit $LASTEXITCODE
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'atlas-gsudo.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'atlas-gsudo'
+          Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44') { throw 'Invalid gsudo archive checksum.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          $gsudo = Join-Path $directory 'x64/gsudo.exe'
+          if (!(Test-Path -LiteralPath $gsudo)) { throw 'Missing gsudo executable.' }
+          $user = $identity.User.Value
+          icacls.exe $env:GITHUB_WORKSPACE /grant "*${user}:(OI)(CI)RX"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $gsudo --integrity Medium --chdir $env:GITHUB_WORKSPACE (Get-Command node.exe).Source tests/desktop-smoke.mjs
+          exit $LASTEXITCODE
