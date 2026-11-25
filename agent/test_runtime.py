@@ -6,10 +6,11 @@ from google.adk.agents import LlmAgent
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+from google.genai.errors import ClientError
 
 from assistant import Answer
 from main import app
-from runtime import run_agent
+from runtime import ModelResponseError, run_agent
 
 
 class FixtureModel(BaseLlm):
@@ -48,6 +49,19 @@ class RuntimeTests(IsolatedAsyncioTestCase):
         text, event = await run_agent(agent, {"question": "fictional question"})
         self.assertEqual(Answer.model_validate_json(text).references, ["overview"])
         self.assertEqual(event.usage_metadata.candidates_token_count, 8)
+
+    async def test_provider_permission_failure_keeps_status_without_details(self):
+        class DeniedModel(BaseLlm):
+            async def generate_content_async(self, llm_request, stream=False):
+                if stream:
+                    yield LlmResponse()
+                raise ClientError(403, {"error":{"code":403, "status":"PERMISSION_DENIED", "message":"Fictional provider details"}})
+
+        agent = LlmAgent(name="denied", model=DeniedModel(model="fixture"), instruction="Run the fixture.")
+        with self.assertRaises(ModelResponseError) as failure:
+            await run_agent(agent, {"question":"fictional question"})
+        self.assertEqual(failure.exception.code, "PERMISSION_DENIED")
+        self.assertNotIn("Fictional provider details", str(failure.exception))
 
 
 class WorkerRoutes(TestCase):

@@ -138,7 +138,7 @@ export function DocumentsView({ledger, save, asOf, busy, vaultKey, scope, onRefe
       let final = batch;
       const saved = await save(current => {
         const csv = statementText(batch);
-        const draft = statementDraft(current, csv, target, asOf, mode === "auto" ? verification : undefined);
+        const draft = statementDraft(current, csv, target, asOf, mode === "auto" ? verification : undefined, batch.statementMapping);
         const outcomes = {...batch.outcomes};
         const existing = new Set(current.transactions.map(entry => field(entry, "importRowKey")).filter(Boolean));
         const entries = draft.filter(line => !existing.has(rowKey(line)) && !outcomes[rowKey(line)]).map(line => {

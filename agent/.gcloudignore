@@ -4,3 +4,4 @@ __pycache__/
 .env*
 *.json
 test_*.py
+eval_*.py

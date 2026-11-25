@@ -58,7 +58,8 @@ async function main() {
       pending.delete(message.id);
       if (message.error) reject(Error(message.error.message)); else resolve(message.result);
     }
-    if (message.method === "Runtime.exceptionThrown") errors.push(message.params.exceptionDetails.text);
+    if (message.method === "Runtime.exceptionThrown")
+      errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
     if (message.method === "Network.requestWillBeSent" && /^https?:/.test(message.params.request.url) &&
         new URL(message.params.request.url).origin !== origin) remote.push(message.params.request.url);
   });
@@ -148,8 +149,9 @@ async function main() {
   await click("Dashboard");
   await click("Open Assistant");
   await until("document.querySelector('[role=dialog]')?.innerText.includes('Dashboard')");
-  await evaluate("document.querySelector('main').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))");
+  await key("Escape", "Escape", 27);
   await until("!document.querySelector('[role=dialog]')");
+  await until("document.activeElement?.getAttribute('aria-label') === 'Open Assistant'");
   await click("Open Assistant");
   await until("!!document.querySelector('[role=dialog]')");
   await evaluate(`(() => {const input=document.querySelector('.atlas-chat textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'What are my savings?');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -160,6 +162,7 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('.atlas-chat').getBoundingClientRect().width <= 1216"), true);
   assert.match(await evaluate("document.querySelector('[role=log]').innerText"), /28,000\.00/);
   if (process.env.ATLAS_SCREENSHOT_ASSISTANT) {
+    await until("document.querySelector('.atlas-chat').getAnimations({subtree:true}).every(a => a.playState === 'finished')");
     const shot = await send("Page.captureScreenshot", {format: "png"});
     writeFileSync(process.env.ATLAS_SCREENSHOT_ASSISTANT, Buffer.from(shot.data, "base64"));
   }
@@ -320,7 +323,8 @@ async function main() {
       writeFileSync(process.env.ATLAS_SCREENSHOT_MOBILE, Buffer.from(shot.data, "base64"));
     }
     if (width === 390) {
-      assert.equal(await evaluate("document.querySelector('.topbar .atlas-assistant-fab') !== null"), true);
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.assistant-floating')).position"), "fixed");
+      assert.equal(await evaluate("document.querySelector('main').getBoundingClientRect().bottom < document.querySelector('.assistant-floating').getBoundingClientRect().top"), true);
       await evaluate("document.querySelector('[aria-label=\"Open navigation\"]').focus()");
       await key("Enter", "Enter", 13);
       await until("document.activeElement.textContent === 'Close navigation' && document.querySelector('main').inert");
@@ -360,6 +364,10 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('[aria-label=\"Accounts\"]').getAttribute('title')"), "Accounts");
   await click("Settings");
   await click("Appearance & navigation");
+  await evaluate("document.querySelector('.atlas-setting-switch input').click()");
+  await until("document.querySelector('.workspace').dataset.motion === 'reduced'");
+  await evaluate("document.querySelector('.atlas-setting-switch input').click()");
+  await until("document.querySelector('.workspace').dataset.motion === 'full'");
   await click("Use dark theme");
   await until("document.documentElement.dataset.theme === 'dark'");
   await click("Dashboard");
@@ -468,6 +476,24 @@ async function main() {
   const backup = readFileSync(deviceFile, "utf8");
   assert.equal(JSON.parse(backup).format, "finance-atlas-device-backup-v1");
   assert.ok(!backup.includes("What are my savings?") && !backup.includes("test-locked.pdf"));
+  await until("document.body.innerText.includes('Local recovery copy saved.')");
+  await click("Card statements");
+  await click("Import card transactions");
+  await until("document.querySelector('[name=statementAccount]')?.value === 'card'");
+  await evaluate(`(() => {
+    const data = new DataTransfer();
+    data.items.add(new File([${JSON.stringify("Date,Description,Debit,Credit\n" + sampleDate + ",Synthetic card purchase,123.45,\n" + sampleDate + ",Card payment,,90")}], 'card.csv'));
+    const input = document.querySelector('[name=statementFile]');
+    input.files = data.files;
+    input.dispatchEvent(new Event('change', {bubbles:true}));
+  })()`);
+  await until("document.querySelector('legend')?.textContent === 'card.csv'");
+  await click("Preview transactions");
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Include row 2\"]').checked"), false);
+  await click("Import reviewed statement");
+  await until("document.body.innerText.includes('1 row imported or matched')");
+  await click("Transactions");
+  await until("document.body.innerText.includes('Synthetic card purchase')");
   assert.deepEqual(errors, []);
   assert.deepEqual(remote, []);
 

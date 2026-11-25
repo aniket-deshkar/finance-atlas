@@ -9,19 +9,19 @@ const digest = value => createHash("sha256").update(value).digest();
 const keysAre = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const money = value => Number.isSafeInteger(value) && Math.abs(value) <= 1_000_000_000_000;
-const date = value => typeof value === "string" && datePattern.test(value) &&
+export const validIsoDate = value => typeof value === "string" && datePattern.test(value) &&
   Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const base64 = (value, size) => typeof value === "string" && value.length === Math.ceil(size / 3) * 4 &&
   Buffer.from(value, "base64").length === size && Buffer.from(value, "base64").toString("base64") === value;
 
 export function validateAnalysis(body) {
   if (!keysAre(body, ["start", "end", "asOf", "spending", "obligations"]) ||
-      ![body.start, body.end, body.asOf].every(date) || body.start > body.end) return false;
+      ![body.start, body.end, body.asOf].every(validIsoDate) || body.start > body.end) return false;
   if (!Array.isArray(body.spending) || body.spending.length > 12 || !Array.isArray(body.obligations) || body.obligations.length > 12) return false;
   if (!body.spending.every(item => keysAre(item, ["id", "actual", "budget"]) &&
       /^spend-[0-9]{1,2}$/.test(item.id) && [item.actual, item.budget].every(money) && item.budget > 0)) return false;
   if (!body.obligations.every(item => keysAre(item, ["id", "dueDate", "amount", "kind", "status"]) &&
-      /^due-[0-9]{1,2}$/.test(item.id) && date(item.dueDate) && money(item.amount) && item.amount > 0 &&
+      /^due-[0-9]{1,2}$/.test(item.id) && validIsoDate(item.dueDate) && money(item.amount) && item.amount > 0 &&
       ["bill", "emi", "card", "other"].includes(item.kind) && ["overdue", "upcoming", "pending"].includes(item.status))) return false;
   return new Set([...body.spending, ...body.obligations].map(item => item.id)).size === body.spending.length + body.obligations.length;
 }

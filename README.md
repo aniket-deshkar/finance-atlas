@@ -12,6 +12,8 @@ Use Node 24. In this directory on Windows, run `npm.cmd ci` and `npm.cmd run dev
 
 For the dedicated Windows app, run `npm.cmd run desktop:build`, then `npm.cmd run desktop:open`, or install the generated setup executable. The desktop embeds the frontend and runs without a development server. See [Desktop setup, migration and storage](docs/DESKTOP.md). Browser and desktop vaults are separate; migrate through the existing backup/import flow.
 
+Run `npm run eval` for the unit, browser and API-to-ADK checks. The [QA and evaluation report](docs/QA-EVALUATION.md) documents prerequisites, coverage and release criteria.
+
 ## Workflows
 
 | Area | Available workflows |
@@ -25,7 +27,7 @@ For the dedicated Windows app, run `npm.cmd run desktop:build`, then `npm.cmd ru
 | Calendar and daily hub | Cycle-limited upcoming payments, bill-type/status filters, interactive day agenda, day-grouped timeline, sorting and spending-room calculations |
 | Salary and transfers | Expected and actual salary, weekend dates, linked bank/card payment accounts, buffers, existing-balance preferences, overdue and issued-statement reservations, funding shortfall and explicitly recorded transfers |
 | Planning and insights | Savings goals and allocations, twelve-month cash-flow forecasts, category and merchant spending, event tags, recurring-payment monthly equivalents, card credit assets, debt principal and fixed-rate payoff simulations |
-| Reconciliation | Bank/card CSV preview, category and payment-type review, both-side transfer/payment matching, duplicate checks, dated balance confirmation, reconciliation marks and original CSV storage |
+| Reconciliation | Bank and card statement upload, column mapping, category suggestions, transfer and repayment matching, duplicate checks and encrypted originals |
 | Receipts and reports | Encrypted image/PDF attachments, full data-and-receipts ZIP archives, monthly printable report, CSV exports and an audit XLSX workbook |
 | Documents | Local CSV and PDF extraction, password prompts, encrypted originals, statement matching and opt-in verified bank CSV posting |
 | Tax, investments and vehicles | Salary and interest tax estimates, portfolio activity and dated valuations, scheme comparison, vehicle expense links and renewal reminders |
@@ -44,7 +46,9 @@ Review the preview and choose **Replace local workspace** to apply it. An encryp
 
 Encrypted restore accepts this app's portable vault snapshots and the legacy `finance-atlas-enc-v1` backup format. Provide the backup's own passphrase. Restore is previewed before replacement.
 
-CSV import accepts ISO dates, named-month dates, and numeric dates in the day-first or month-first format selected before importing. Two-digit years use 2000–2099. Select the format used by your bank, since a date such as 05/11/2026 is ambiguous without it. Files are limited to 3 MB and 5,000 rows per preview. Similar existing entries are held for review. A CSV file containing repeated identical rows requires review before import. Transfers and card settlements can be classified or linked to their existing ledger entries.
+Open **Transactions → Import bank or card statement**, or **Card statements → Import card transactions**. Choose the account, confirm the columns and date order, then preview the rows. Review the category and transaction type, link an existing entry, or leave the row out. Likely transfers and repayments require review. The original is stored encrypted in Documents.
+
+CSV files support ISO, named-month and numeric dates, up to 3 MB and 5,000 rows. A numeric date such as 05/11/2026 follows the selected date order. Text PDFs up to 12 MB can be imported when the rows contain recognizable dates, descriptions and explicit debit or credit indicators. Password-protected PDFs open with the issuer’s password on the device. Use the issuer’s CSV export for scanned or unsupported layouts.
 
 ## Storage and backups
 
@@ -57,7 +61,7 @@ financial records. In **Settings → Data, backup & security**, download a separ
 encrypted device backup for originals, extracted records, and Assistant history.
 Restore it with the original vault passphrase into an empty device library.
 
-Choose **Daily encrypted backups → Choose backup folder** once and select a private folder on your device. Browser permission is required to access that folder. Copies run daily and after changes while the workspace is open and unlocked. A selected cloud-synced folder may also sync through its provider's configuration. Backups use encrypted `.atlasenc` files and are verified after writing. Settings contains the backup controls.
+Finance Atlas creates local encrypted recovery copies automatically on unlock and after saves. To keep an additional copy outside app storage, open **Encrypted ledger backups → Choose backup folder** and grant folder access. Folder copies use encrypted `.atlasenc` files and are verified after writing. Copies run daily and after changes while the workspace is open and unlocked.
 
 Encrypted browser recovery snapshots retain up to 25 local versions. Clearing site data can erase both the vault and these recovery copies. The passphrase is required for encrypted restore. Downloadable JSON, CSV, XLSX and ZIP exports are readable files. Receipt ZIP archives include binary files and a manifest. The encrypted vault is limited to 30 MB, with up to 100 receipts totalling 15 MB. Each receipt is limited to 4 MB. XLSX reports support 100,000 rows per sheet; the JSON backup retains the complete workspace.
 

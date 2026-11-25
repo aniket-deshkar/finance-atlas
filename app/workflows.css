@@ -1,0 +1,113 @@
+/* The Assistant sheet and press feedback follow God UI's transform-only motion. */
+.workspace { --assistant-nav-offset: 0px; }
+.workspace[data-nav^="bottom"] { --assistant-nav-offset: 88px; }
+.workspace[data-nav="bottom-wide"] { --assistant-nav-offset: 72px; }
+.workspace:has(.assistant-floating) > .content { padding-bottom: calc(6rem + var(--assistant-nav-offset)); }
+.workspace > .content .assistant-floating {
+  display: inline-flex;
+  position: fixed;
+  inset: auto max(1rem, env(safe-area-inset-right)) calc(var(--assistant-nav-offset) + max(1rem, env(safe-area-inset-bottom))) auto;
+  z-index: 12;
+  width: auto;
+  height: 3rem;
+  min-width: 3rem;
+  padding: 0 1rem;
+  gap: .55rem;
+  border-radius: 999px;
+  border: 1px solid #6f8a80;
+  background: #143d34;
+  color: #fff;
+  font-weight: 650;
+  box-shadow: 0 8px 25px #001c1940;
+}
+.workspace:has(aside[data-drawer="true"]) .assistant-floating { visibility: hidden; }
+.assistant-floating, .assistant-send { transition: scale .25s cubic-bezier(.34, 1.56, .64, 1); }
+.assistant-floating:active, .assistant-send:active { scale: .97; }
+.assistant-backdrop { position: fixed; inset: 0; z-index: 35; background: #071b16a6; }
+.assistant-positioner { position: fixed; inset: 0; z-index: 36; display: grid; justify-items: end; align-items: end; padding: 1rem; }
+.assistant-sheet {
+  width: min(100%, 32rem);
+  max-height: min(52rem, calc(100dvh - 2rem));
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  background: var(--white);
+  color: var(--ink);
+  box-shadow: 0 22px 70px #001c1966;
+}
+.assistant-sheet[data-state="open"] { animation: assistant-sheet-in .24s cubic-bezier(.2,.8,.3,1) both; }
+@keyframes assistant-sheet-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+.assistant-workspace { display: grid; gap: 1rem; min-width: 0; }
+.atlas-chat.assistant-workspace.panel { grid-template-columns: minmax(0, 1fr); max-width: 62rem; margin-inline: auto; }
+.atlas-chat.assistant-workspace.panel > :is(.panel-head, .atlas-chat-history, form, [role="status"]) { grid-column: 1; grid-row: auto; }
+.atlas-chat.assistant-workspace.panel > .atlas-chat-history { min-height: clamp(10rem, 24dvh, 18rem); }
+.assistant-sheet .assistant-workspace { display: grid; grid-template-columns: minmax(0, 1fr); padding: 1rem; }
+.assistant-sheet .assistant-workspace > :is(.panel-head, .atlas-chat-history, form, [role="status"]) { grid-column: 1; grid-row: auto; }
+.assistant-workspace .atlas-chat-heading { display: flex; align-items: center; gap: .7rem; }
+.assistant-mark { display: grid; place-items: center; width: 2.65rem; height: 2.65rem; flex: none; border-radius: .8rem; background: #143d34; color: #fff; }
+.assistant-workspace .atlas-chat-history { background: var(--paper); border-radius: 1rem; }
+.assistant-workspace .atlas-chat-intro { border: 0; padding: .5rem; min-height: 0; background: transparent; }
+.assistant-workspace .atlas-chat-intro .button-row { display: grid; width: 100%; }
+.assistant-workspace .atlas-chat-intro .button-row button { justify-content: space-between; width: 100%; border-radius: .75rem; text-align: start; }
+.assistant-workspace .atlas-message { min-width: 0; width: fit-content; max-width: min(92%, 42rem); border-radius: 1rem; overflow-wrap: anywhere; }
+.assistant-workspace .atlas-message[data-role="user"] { justify-self: end; }
+.assistant-workspace .assistant-composer { border: 1px solid var(--line); border-radius: 1rem; padding: .9rem; background: var(--white); }
+.atlas-chat.assistant-workspace.panel > .assistant-composer { background: var(--white); }
+.assistant-workspace .assistant-composer textarea { min-height: 4.25rem; background: var(--paper); }
+.assistant-workspace .assistant-composer :is(select, textarea) { max-width: 100%; }
+.assistant-models { min-width: 0; }
+.assistant-cloud-link { justify-self: start; padding: .35rem .5rem; }
+.assistant-send { justify-self: end; border-radius: .75rem; }
+.assistant-sheet .atlas-chat-history { min-height: 0; max-height: 32dvh; }
+.assistant-sheet .panel-head { align-items: center; }
+.assistant-sheet .panel-head button { min-height: 40px; }
+.welcome-connected, .backup-summary { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
+.welcome-connected { color: var(--green); font-weight: 600; }
+.backup-summary [role="status"] { color: var(--muted); }
+.atlas-setting-switch { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-block: 1rem .25rem; cursor: pointer; }
+.atlas-setting-switch [data-part="label"] { font-weight: 650; }
+.atlas-setting-switch small { display: block; margin-top: .25rem; }
+.atlas-setting-switch [data-part="control"] { display: flex; align-items: center; flex: 0 0 44px; height: 26px; padding: 3px; border-radius: 99px; background: var(--muted); }
+.atlas-setting-switch [data-part="control"][data-state="checked"] { background: var(--green); }
+.atlas-setting-switch [data-part="thumb"] { width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .18s ease-out; }
+.atlas-setting-switch [data-part="thumb"][data-state="checked"] { transform: translateX(18px); }
+.atlas-setting-switch:has(input:focus-visible) [data-part="control"] { outline: 2px solid var(--purple); outline-offset: 4px; }
+.atlas-setting-switch[data-disabled] { cursor: default; opacity: .65; }
+.statement-setup { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); align-items: end; gap: .75rem; }
+.statement-setup label { min-width: 0; }
+.statement-upload input { max-width: 100%; }
+.statement-mapping { display: grid; gap: .8rem; border: 1px solid var(--line); border-radius: .85rem; padding: .9rem; margin-block: 1rem; }
+.statement-mapping legend { max-width: 100%; overflow-wrap: anywhere; font-weight: 650; padding-inline: .35rem; }
+.statement-mapping > button { justify-self: start; }
+.statement-review { margin-block: 1rem .6rem; }
+.statement-review p { margin: .25rem 0; }
+@media (max-width: 600px) {
+  .workspace > .content { height: 100dvh; min-height: 0; overflow-y: auto; }
+  .workspace:has(.assistant-floating) > .content {
+    height: calc(100dvh - 4rem - env(safe-area-inset-bottom) - var(--assistant-nav-offset));
+    padding-bottom: 1rem;
+  }
+  .workspace:has(.assistant-floating)::after {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: auto 0 var(--assistant-nav-offset);
+    z-index: 11;
+    height: calc(4rem + env(safe-area-inset-bottom));
+    background: var(--paper);
+    border-top: 1px solid var(--line);
+  }
+  .workspace > .content .assistant-floating { bottom: calc(var(--assistant-nav-offset) + max(.5rem, env(safe-area-inset-bottom))); }
+  .assistant-positioner { padding: .6rem; }
+  .assistant-sheet { max-height: calc(100dvh - 1.2rem - env(safe-area-inset-bottom)); }
+  .assistant-sheet .assistant-workspace { padding: .8rem; }
+  .assistant-sheet .panel-head { align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-sheet[data-state="open"], .assistant-floating, .assistant-send { animation: none; transition: none; scale: none; }
+  .atlas-setting-switch [data-part="thumb"] { transition: none; }
+}
+html:has(.workspace[data-motion="reduced"]) :is(.assistant-sheet[data-state="open"], .assistant-sheet .atlas-message) { animation: none; }
+.workspace[data-motion="reduced"] :is(.assistant-floating, .assistant-send), html:has(.workspace[data-motion="reduced"]) .assistant-send { scale: none; }

@@ -12,6 +12,12 @@ const catalog = assistantCatalog({[model]:{location:"global", input:1.5,output:7
 const body = {id,model,reasoning:"low",question:"What did I save?",history:[],
   context:[{ref:"overview",start:"2026-11-01",end:"2026-11-30",values:{savings:2400000}}]};
 
+test("the model catalog requires an explicit processing location", () => {
+  for (const configuration of [{input:1.5,output:7.5}, {location:null,input:1.5,output:7.5}]) {
+    assert.equal(assistantCatalog({[model]:configuration}).find(entry => entry.id === model).enabled,false);
+  }
+});
+
 test("owner-only chat accepts bounded approved facts, accounts for usage and rejects replay", async t => {
   let dispatched = 0;
   const runs = new Map();

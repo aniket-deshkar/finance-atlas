@@ -1,19 +1,20 @@
-import {csvEncode, csvParse, parseStatement, statementMatches, type Staged} from "./files.ts";
+import {csvEncode, csvParse, parseStatement, statementMatches, type Staged, type StatementColumns} from "./files.ts";
 import {field, minor, row, rows, type Ledger} from "./ledger.ts";
 
 export type DocumentKind = "Statement" | "Tax evidence" | "Policy" | "Portfolio";
-export type ExtractedDocument = {id: string; name: string; kind: DocumentKind; pages: string[]; date: string; accountId?: string};
+export type ExtractedDocument = {id: string; name: string; kind: DocumentKind; pages: string[]; date: string; accountId?: string;
+  statementMapping?: {columns: StatementColumns; dateOrder: "day-first" | "month-first"; debitPositive: boolean}};
 
 export function statementCsvFromText(pages: string[]) {
   const lines = pages.flatMap(page => page.split("\n"));
   if (!lines.some(line => /date/i.test(line) && /description|narration|particulars|transaction details/i.test(line) && /amount/i.test(line))) return "";
   const table: string[][] = [["Date","Description","Amount","Direction"]];
-  const date = /^(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2}))\s/;
+  const date = /^(\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2})|\d{1,2}[ -][A-Za-z]{3,9}[ -]\d{4})\s/;
   for (const source of lines) {
     const line = source.trim();
     const prefix = date.exec(line);
     if (!prefix) continue;
-    const parsed = /^(.+?)\s+₹?([\d,]+(?:\.\d{1,2})?)\s*(DR|CR|DEBIT|CREDIT)\s*(?:₹?[\d,]+(?:\.\d{1,2})?)?$/i.exec(line.slice(prefix[0].length));
+    const parsed = /^(.+?)\s+₹?([\d,]+(?:\.\d{1,2})?)\s*(DR|CR|DEBIT|CREDIT)\.?\s*(?:₹?[\d,]+(?:\.\d{1,2})?)?$/i.exec(line.slice(prefix[0].length));
     if (!parsed) return "";
     table.push([prefix[1],parsed[1],parsed[2],parsed[3]]);
   }
@@ -59,11 +60,11 @@ export function verifiedStatement(text: string, opening: number, closing: number
 }
 
 export function statementDraft(ledger: Ledger, text: string, accountId: string, asOf: string,
-  verification?: {opening: number; closing: number}) {
-  const entries = parseStatement(text, ledger, accountId, asOf);
+  verification?: {opening: number; closing: number}, mapping?: ExtractedDocument["statementMapping"]) {
+  const entries = parseStatement(text, ledger, accountId, asOf, mapping?.dateOrder, mapping);
   const account = ledger.accounts.find(a => a.id === accountId);
   const automation = row(row(ledger.settings.statementAutomation)[accountId]);
-  const canPost = Boolean(automation.enabled && account?.type === "bank" && verification &&
+  const canPost = Boolean(!mapping && automation.enabled && account?.type === "bank" && verification &&
     verifiedStatement(text, verification.opening, verification.closing, entries));
   return entries.map(line => {
     const description = merchantKey(line.entry.note);

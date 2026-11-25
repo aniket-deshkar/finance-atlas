@@ -35,3 +35,4 @@ atlas-api-env.yaml
 atlas-api-env.yml
 src-tauri/target/
 src-tauri/gen/schemas/
+/artifacts/atlas-eval/

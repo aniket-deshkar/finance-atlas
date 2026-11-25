@@ -161,16 +161,29 @@ summaries. Use a regional model when you require regional processing.
 
 ```json
 {
+  "gemini-3.1-flash-lite": {
+    "location": "global",
+    "input": 0.25,
+    "output": 1.5,
+    "pricingDate": "2026-11-25"
+  },
   "gemini-4-hydrogen": {
     "location": "global",
     "input": 1.5,
     "output": 7.5,
-    "pricingDate": "2026-11-16"
+    "pricingDate": "2026-11-25"
+  },
+  "gemini-4-carbon": {
+    "location": "global",
+    "input": 4,
+    "output": 20,
+    "pricingDate": "2026-12-01"
   }
 }
 ```
 
-This example uses the published global standard rates. Verify pricing at
+This example uses the published global standard rates, including the posted
+December 1 rates for Carbon as a conservative estimate. Verify pricing at
 deployment, including grounding, cache, reasoning, regional and long-context
 charges where applicable. The app reports an estimate calculated from usage.
 Provider invoices determine the final charge. Set

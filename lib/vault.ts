@@ -264,17 +264,26 @@ export async function preference<T>(name: string, update?: T): Promise<T | undef
   } finally {db.close();}
 }
 
-export async function saveSnapshot(envelope: Envelope, day: string) {
+export async function saveSnapshot(envelope: Envelope, day: string, currentOnly = false) {
   const db = await database();
   try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction("snapshots", "readwrite"), store = tx.objectStore("snapshots");
-      store.put(envelope, day);
-      const keys = store.getAllKeys();
-      keys.onsuccess = () => {
-        for (const key of keys.result.sort().slice(0, -25)) store.delete(key);
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(currentOnly ? ["snapshots", storeName] : "snapshots", "readwrite");
+      const store = tx.objectStore("snapshots");
+      let saved = false;
+      const write = () => {
+        store.put(envelope, day);
+        saved = true;
+        const keys = store.getAllKeys();
+        keys.onsuccess = () => {
+          for (const key of keys.result.sort().slice(0, -25)) store.delete(key);
+        };
       };
-      tx.oncomplete = () => resolve();
+      if (currentOnly) {
+        const active = tx.objectStore(storeName).get("ledger");
+        active.onsuccess = () => {if (active.result?.revision === envelope.revision) write();};
+      } else write();
+      tx.oncomplete = () => resolve(saved);
       tx.onabort = () => reject(tx.error);
     });
   } finally {db.close();}

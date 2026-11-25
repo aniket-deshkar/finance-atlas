@@ -11,12 +11,13 @@ type Directory = FileSystemDirectoryHandle & {
 };
 type Config = {handle?: Directory; desktopFolder?: string; enabled: boolean; lastDay?: string; lastRevision?: string; lastAt?: string};
 export type BackupControls = {
-  message: string; folder: string; enabled: boolean; lastAt: string; choose: () => Promise<void>; toggle: () => Promise<void>; run: () => Promise<void>;
+  message: string; localStatus: string; folder: string; enabled: boolean; lastAt: string; choose: () => Promise<void>; toggle: () => Promise<void>; run: () => Promise<void>;
 };
 
 export function useDailyBackup(envelope: Envelope | undefined): BackupControls {
   const [config, setConfig] = useState<Config>({enabled: false});
-  const [message, setMessage] = useState("Choose a backup folder to enable daily encrypted copies.");
+  const [message, setMessage] = useState("Choose a folder to keep an additional encrypted copy outside the app.");
+  const [localStatus, setLocalStatus] = useState("Saving the local recovery copy…");
   const writing = useRef(false);
   useEffect(() => {
     void preference<Config>("backup").then(saved => {
@@ -61,12 +62,16 @@ export function useDailyBackup(envelope: Envelope | undefined): BackupControls {
   }, [envelope]);
   useEffect(() => {
     if (!envelope) return;
-    const timer = setTimeout(() => {
-      void saveSnapshot(envelope, new Date().toISOString()).catch(() => setMessage("The local recovery snapshot could not be saved."));
-      void perform(false);
-    }, 15000);
+    let active = true;
+    const snapshot = () => void saveSnapshot(envelope, today(), true).then(saved => {
+      if (active && saved) setLocalStatus("Local recovery copy saved.");
+    }).catch(() => {if (active) setLocalStatus("Could not save a local recovery copy.");});
+    setLocalStatus("Saving the local recovery copy…");
+    snapshot();
+    const timer = setTimeout(() => {void perform(false);}, 15000);
     const interval = setInterval(() => {void perform(false);}, 60000);
-    return () => {clearTimeout(timer);clearInterval(interval);};
+    const daily = setInterval(snapshot, 3_600_000);
+    return () => {active = false;clearTimeout(timer);clearInterval(interval);clearInterval(daily);};
   }, [envelope, perform]);
   const choose = async () => {
     try {
@@ -88,10 +93,12 @@ export function useDailyBackup(envelope: Envelope | undefined): BackupControls {
       await perform(true);
     } catch (error) {if (!(error instanceof DOMException && error.name === "AbortError")) setMessage(error instanceof Error ? error.message : "Could not select the folder.");}
   };
-  return {message, folder: config.desktopFolder || config.handle?.name || "", enabled: config.enabled, lastAt: config.lastAt || "", choose,
+  return {message, localStatus, folder: config.desktopFolder || config.handle?.name || "", enabled: config.enabled, lastAt: config.lastAt || "", choose,
     toggle: async () => {
       const latest = await preference<Config>("backup") ?? config;
       const next = {...latest, enabled: !latest.enabled};
       await preference("backup", next);setConfig(next);
+      setMessage(next.enabled ? "Encrypted folder backups are enabled." : "Encrypted folder backups are paused.");
+      if (next.enabled) await perform(true);
     }, run: () => perform(true)};
 }
