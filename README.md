@@ -53,7 +53,9 @@ The vault uses AES-256-GCM and a passphrase-derived PBKDF2-SHA256 key with 600,0
 **Documents** keeps new originals, extracted text and
 import review results in an encrypted device store. The Assistant's local
 conversation history uses the same device store. Ledger backups cover your
-financial records, so retain originals separately.
+financial records. In **Settings → Data, backup & security**, download a separate
+encrypted device backup for originals, extracted records, and Assistant history.
+Restore it with the original vault passphrase into an empty device library.
 
 Choose **Daily encrypted backups → Choose backup folder** once and select a private folder on your device. Browser permission is required to access that folder. Copies run daily and after changes while the workspace is open and unlocked. A selected cloud-synced folder may also sync through its provider's configuration. Backups use encrypted `.atlasenc` files and are verified after writing. Settings contains the backup controls.
 

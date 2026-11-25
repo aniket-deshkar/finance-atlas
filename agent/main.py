@@ -1,19 +1,16 @@
-import json
 import logging
 import os
 from typing import Literal
-from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from google.adk.agents import LlmAgent
-from google.adk.agents.run_config import RunConfig
-from google.adk.runners import InMemoryRunner
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field
 
 from specialists import SPECIALISTS, run_specialists
 from assistant import register_assistant
+from runtime import read_json, run_agent, vertex_model
 
 
 class Proposal(BaseModel):
@@ -33,28 +30,16 @@ logging.getLogger("google_adk").setLevel(logging.CRITICAL)
 logging.getLogger("google_genai").setLevel(logging.CRITICAL)
 
 
-async def invoke_specialist(name: str, facts: dict) -> list:
+async def invoke_specialist(name: str, facts: dict, model: str, location: str) -> list:
     agent = LlmAgent(
         name=f"atlas_{name}_analyst",
-        model=os.environ["ATLAS_VERTEX_MODEL"],
+        model=vertex_model(model, location),
         instruction=SPECIALISTS[name],
         output_schema=Proposals,
         generate_content_config=types.GenerateContentConfig(max_output_tokens=750, candidate_count=1),
     )
-    runner = InMemoryRunner(agent=agent, app_name="finance_atlas")
-    session = await runner.session_service.create_session(app_name="finance_atlas", user_id="owner", session_id=str(uuid4()))
-    prompt = types.Content(role="user", parts=[types.Part(text=json.dumps(facts, separators=(",", ":")))])
-    result = None
-    try:
-        async for event in runner.run_async(
-            user_id="owner", session_id=session.id, new_message=prompt,
-            run_config=RunConfig(max_llm_calls=1),
-        ):
-            if event.is_final_response() and event.content:
-                result = "".join(part.text or "" for part in event.content.parts or [] if not part.thought)
-        return Proposals.model_validate_json(result or "").model_dump()["items"]
-    finally:
-        await runner.close()
+    result, _ = await run_agent(agent, facts)
+    return Proposals.model_validate_json(result).model_dump()["items"]
 
 
 @app.get("/healthz")
@@ -64,20 +49,20 @@ async def health():
 
 @app.post("/analyze")
 async def analyze(request: Request):
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > 12_000:
-            raise HTTPException(413, "Summary is too large.")
-        body.extend(chunk)
-    try:
-        summary = json.loads(body)
-        if not isinstance(summary, dict) or set(summary) != {"start", "end", "asOf", "spending", "obligations"}:
-            raise ValueError
-        if any(not isinstance(summary[name], list) or len(summary[name]) > 12 for name in SPECIALISTS):
-            raise ValueError
-    except (ValueError, TypeError):
-        raise HTTPException(400, "Invalid summary.") from None
-    return await run_specialists(summary, invoke_specialist)
+    summary = await read_json(request, 12_000)
+    if not isinstance(summary, dict) or set(summary) != {"start", "end", "asOf", "spending", "obligations"} or any(
+        not isinstance(summary[name], list) or len(summary[name]) > 12 for name in SPECIALISTS
+    ):
+        raise HTTPException(400, "Invalid summary.")
+    model = request.headers.get("x-atlas-model") or os.environ["ATLAS_VERTEX_MODEL"]
+    location = request.headers.get("x-atlas-location") or os.environ["GOOGLE_CLOUD_LOCATION"]
+    if model != os.environ["ATLAS_VERTEX_MODEL"] or location != os.environ["GOOGLE_CLOUD_LOCATION"]:
+        raise HTTPException(503, "Configure the same analysis model and region on the API and worker.")
+
+    async def invoke(name, facts):
+        return await invoke_specialist(name, facts, model, location)
+
+    return await run_specialists(summary, invoke)
 
 
 if __name__ == "__main__":

@@ -33,8 +33,10 @@ const storage = {
   }
 };
 const auth = getAuth(firebase);
+const release = process.env.ATLAS_RELEASE_SHA;
+if (release && !/^[a-f0-9]{40}$/.test(release)) throw Error("Invalid release revision.");
 const worker = process.env.ATLAS_AGENT_URL;
-if (worker && !/^https:\/\/[a-z0-9-]+\.[a-z0-9.-]*run\.app$|^https:\/\/[a-z0-9-]+\.run\.app$/.test(worker))
+if (worker && !/^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app$/.test(worker))
   throw Error("Set ATLAS_AGENT_URL to the HTTPS Cloud Run service origin.");
 const client = worker ? await new GoogleAuth().getIdTokenClient(worker) : null;
 const catalog = assistantCatalog(JSON.parse(process.env.ATLAS_CHAT_MODELS || "{}"));
@@ -53,7 +55,10 @@ const cloud = process.env.ATLAS_SYNC_BUCKET ? createCloud({
     if (!month) throw Object.assign(Error("AI budget limit reached."), {code: "ATLAS_AI_LIMIT"});
     let status = "failed";
     try {
-      const response = await client.request({url: worker + "/analyze", method: "POST", data: summary, timeout: 48_000, retry: false});
+      const response = await client.request({
+        url: worker + "/analyze", method: "POST", data: summary, timeout: 48_000, retry: false,
+        headers: {"x-atlas-model": analysisModel.id, "x-atlas-location": analysisModel.location}
+      });
       status = "complete";
       return response.data;
     } finally {
@@ -69,5 +74,9 @@ const assistant = cloudAi ? {
   research: process.env.ATLAS_POLICY_MODEL ? {model: process.env.ATLAS_POLICY_MODEL, invoke: invokeWorker("/policy")} : undefined
 } : undefined;
 const market = cloud ? {dhanToken: process.env.ATLAS_DHAN_DATA_TOKEN} : undefined;
-const app = await createApi({ownerUid, verifyToken: token => auth.verifyIdToken(token, true), storage, cloud, assistant, market});
+const app = await createApi({
+  ownerUid, verifyToken: token => auth.verifyIdToken(token, true), storage, cloud, assistant, market,
+  releaseRevision: release,
+  auditLog: process.env.ATLAS_HTTP_LOGGING === "true" ? event => process.stdout.write(JSON.stringify(event) + "\n") : undefined
+});
 await app.listen({host: "0.0.0.0", port: Number(process.env.PORT || 8080)});

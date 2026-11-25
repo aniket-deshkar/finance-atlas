@@ -1,4 +1,5 @@
 import {useEffect, useEffectEvent, useRef, useState, type ReactNode} from "react";
+import {createPortal} from "react-dom";
 import {assistantFact, localAnswer, usd, type Fact, type Model, type Turn, type Usage} from "../lib/assistant";
 import {checkedJson, cloudConfigured, cloudFetch, json, watchCloudConnection} from "../lib/cloud";
 import {field, row} from "../lib/ledger";
@@ -7,7 +8,7 @@ import {deviceRecord} from "../lib/vault";
 import {documentHints, type ExtractedDocument} from "../lib/documents";
 import {minor} from "../lib/ledger";
 import type {Staged} from "../lib/files";
-import type {FeatureProps} from "./feature-ui";
+import {Editor, type FeatureProps} from "./feature-ui";
 import {Icon} from "./icons";
 
 type Catalog = {enabled?: boolean; models: Model[]; maxOutput?: number; research: boolean};
@@ -84,14 +85,17 @@ export function AssistantSettings({ledger, save, busy, cloudControls}: FeaturePr
   </section></div>;
 }
 
-export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, privacy, navigate, renderDocuments}: FeatureProps & {
+export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, privacy, navigate, renderDocuments, launcher}: FeatureProps & {
   view: View; target: string; vaultKey: CryptoKey; scope: string; privacy: boolean; navigate: (view: View, id?: string) => void;
+  launcher: HTMLElement | null;
   renderDocuments: (onReference: (document: AttachedDocument) => void) => ReactNode;
 }) {
   const full = view === "Assistant";
   const [floating, setFloating] = useState(false);
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [includeHistory, setIncludeHistory] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [sources, setSources] = useState<Source[]>([]);
   const [attachment, setAttachment] = useState(false);
   const [linkedDocument, setLinkedDocument] = useState<{label: string; id: string; fact: Fact} | null>(null);
@@ -107,18 +111,32 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   const composer = useRef<HTMLTextAreaElement>(null);
   const alive = useRef(true);
   const displayed = full || floating;
+  useEffect(() => {if (privacy) controller.current?.abort();}, [privacy]);
   useEffect(() => {
     alive.current = true;
-    void deviceRecord<Turn[]>(scope, "assistant-history", vaultKey).then(history => {
-      if (alive.current && history) setTurns(history);
-    }).catch(() => {if (alive.current) setMessage("Local conversation history could not be read.");});
-    return () => {alive.current = false;controller.current?.abort();};
+    let generation = 0;
+    const read = () => {
+      const request = ++generation;
+      void deviceRecord<Turn[]>(scope, "assistant-history", vaultKey).then(history => {
+        if (alive.current && request === generation && history) setTurns(history);
+      }).catch(() => {if (alive.current && request === generation) setMessage("Local conversation history could not be read.");});
+    };
+    read();
+    window.addEventListener("atlas-device-library-restored", read);
+    return () => {
+      generation++;alive.current = false;controller.current?.abort();
+      window.removeEventListener("atlas-device-library-restored", read);
+    };
   }, [scope, vaultKey]);
   useEffect(() => {
     if (!displayed || !cloudConfigured) return;
     const read = new AbortController();
+    let generation = 0;
     const unsubscribe = watchCloudConnection(connected => {
-      if (connected) void readCatalog(read.signal).then(result => {if (!read.signal.aborted) setCatalog(result);}).catch(() => {});
+      const request = ++generation;
+      if (connected) void readCatalog(read.signal).then(result => {
+        if (!read.signal.aborted && request === generation) setCatalog(result);
+      }).catch(() => {});
       else setCatalog(null);
     });
     return () => {unsubscribe();read.abort();};
@@ -151,7 +169,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   if (linkedDocument) attachments.splice(5, attachments.length - 5);
   if (linkedDocument) attachments.push({fact:linkedDocument.fact,link:{ref:linkedDocument.fact.ref,view:"Documents",id:linkedDocument.id,label:linkedDocument.label}});
   const context = attachments.map(item => item.fact);
-  const history = turns.slice(-4).map(turn => ({role:turn.role, text:turn.text.slice(0,1000)}));
+  const history = includeHistory ? turns.slice(-4).map(turn => ({role:turn.role, text:turn.text.slice(0,1000)})) : [];
   const rawQuestion = question.trim();
   const bytes = new TextEncoder().encode(JSON.stringify([rawQuestion,context,history])).length;
   const estimate = model ? Math.ceil((bytes + 1200) * 3 * (model.input ?? 0) + (catalog?.maxOutput ?? 768) * 3 * (model.output ?? 0)) : 0;
@@ -159,14 +177,14 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   const canSend = Boolean(rawQuestion && !privacy && !loading && (modelId === "local" || model && approval === preview));
 
   async function send() {
-    if (!canSend || !alive.current) return;
+    if (!canSend || !alive.current || controller.current) return;
     const signal = new AbortController();
     controller.current = signal;
-    setLoading(true);setMessage("");setApproval("");
+    setLoading(true);setMessage("");setApproval("");setIncludeHistory(false);
     try {
       const result: Result = model ? await checkedJson<Result>(await cloudFetch("/v1/ai/chat", json({
         id:crypto.randomUUID(), model:model.id, reasoning, question:rawQuestion, context, history
-      }, signal.signal))) : localAnswer(rawQuestion, context);
+      }, AbortSignal.any([signal.signal, AbortSignal.timeout(60_000)])))) : localAnswer(rawQuestion, context);
       signal.signal.throwIfAborted();
       const next: Turn[] = [...turns,{role:"user",text:rawQuestion},
         {role:"assistant",text:result.answer,sources:attachments.filter(item => result.references.includes(item.fact.ref)).map(item => item.link)}].slice(-50) as Turn[];
@@ -176,7 +194,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
         if (result.usage) setMessage(result.usage.cost === null ? "Usage cost unavailable for this run." : "Usage cost " + usd(result.usage.cost));
       }
     } catch(error) {if (!signal.signal.aborted && alive.current) setMessage(error instanceof Error ? error.message : "Assistant could not answer.");}
-    finally {if (alive.current) setLoading(false);}
+    finally {controller.current = null;if (alive.current) setLoading(false);}
   }
   const attach = (item: Source) => {
     setSources(values => [item, ...values.filter(x => x.view !== item.view)].slice(0, 6));
@@ -195,18 +213,16 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   }
 
   return <>
-    {!full && <button ref={fab} className="atlas-assistant-fab" aria-label={floating ? "Close Assistant" : "Open Assistant"} aria-expanded={floating}
-      onClick={openFloating}><Icon name="chat" /></button>}
+    {!full && launcher && createPortal(<button ref={fab} className="atlas-assistant-fab" type="button"
+      aria-label={floating ? "Close Assistant" : "Open Assistant"} aria-expanded={floating}
+      onClick={openFloating}><Icon name="chat" /></button>, launcher)}
     {displayed && <section ref={drawer} role={full ? undefined : "dialog"} aria-label="Finance Atlas Assistant"
       className={"panel stack atlas-chat " + (full ? "atlas-content-enter" : "atlas-chat-drawer")}>
       <header className="panel-head"><div className="atlas-chat-heading"><span className="atlas-chat-kicker">YOUR FINANCIAL COPILOT</span><h2>{full ? "Ask Finance Atlas" : "Assistant"}</h2>
         <p>Review the figures you choose. Cloud questions always ask for your approval.</p></div><div className="button-row">
         {!full && <button onClick={() => {navigate("Assistant");setFloating(false);}}>Open full Assistant</button>}
         {!full && <button onClick={() => {setFloating(false);fab.current?.focus();}}>Close</button>}
-        {turns.length > 0 && <button disabled={loading} onClick={async () => {
-          try {await deviceRecord(scope,"assistant-history",vaultKey,[]);setTurns([]);setApproval("");}
-          catch {setMessage("The conversation could not be cleared.");}
-        }}>Clear chat</button>}
+        {!privacy && turns.length > 0 && <button disabled={loading} onClick={() => setConfirmClear(true)}>Clear chat</button>}
       </div></header>
       {privacy ? <p>Show amounts to open your conversation and send questions.</p> : <>
       <div className="atlas-chat-history" role="log" aria-label="Conversation">
@@ -230,23 +246,27 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
           "The selected cloud model is unavailable. Reconnect in Settings or choose On-device figures."}</p>}
         {!model && modelId !== "local" && <button type="button" onClick={() => {setChosen("local");setApproval("");}}>Use on-device figures</button>}
         <div className="button-row"><label><span className="sr-only">Reference another tab</span>
-          <select value="" onChange={event => {if(event.target.value) attach({view:event.target.value as View});}}>
+          <select name="assistantReference" value="" onChange={event => {if(event.target.value) attach({view:event.target.value as View});}}>
             <option value="">@ Reference a tab</option>
             {sourceViews.map(item =>
               <option value={item} key={item}>{label(item)}</option>)}
           </select></label>
-          <button type="button" aria-expanded={attachment} onClick={() => setAttachment(!attachment)}>Attach a file</button>
+          <button type="button" aria-expanded={attachment} onClick={() => setAttachment(!attachment)}>Add document figures</button>
         </div>
         {attachments.length > 0 && <div className="button-row">{attachments.map(item => <button type="button" key={item.link.ref}
           title={item.fact.start + " to " + item.fact.end}
           onClick={() => {if (item.link.view === "Documents") setLinkedDocument(null);
             else setSources(values => values.filter(x => x.view !== item.link.view));setApproval("");}}>{item.link.label} ×</button>)}</div>}
-        <label>Your question<textarea ref={composer} rows={3} maxLength={1600} value={question} onChange={event => {
+        <label>Your question<textarea name="assistantQuestion" autoComplete="off" ref={composer} rows={3} maxLength={1600} value={question} onChange={event => {
           setQuestion(event.target.value);setApproval("");
         }} placeholder="How much have I saved in this period?" /></label>
         {model && rawQuestion && <>
           <p className="muted">{model.provider} · {model.location} · {model.label} · {reasoning} · estimated up to {usd(estimate)}</p>
-          <details><summary>Review exact question, figures, and previous turns</summary><pre className="atlas-context">{preview}</pre></details>
+          <p className="muted">Only the question and figures below are sent. Original documents stay on this device.</p>
+          {turns.length > 0 && <label className="checkbox"><input type="checkbox" name="includeHistory" checked={includeHistory} onChange={event => {
+            setIncludeHistory(event.target.checked);setApproval("");
+          }} />Include up to four previous messages</label>}
+          <details><summary>Review what will be sent</summary><pre className="atlas-context">{preview}</pre></details>
           <label className="checkbox"><input type="checkbox" checked={approval === preview} onChange={event => setApproval(event.target.checked ? preview : "")} />
             Send the reviewed information to {model.provider} for this reply</label>
         </>}
@@ -273,5 +293,11 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
       {message && <p role="status">{message}</p>}
       </>}
     </section>}
+    {confirmClear && !privacy && <Editor title="Clear conversation?" close={() => setConfirmClear(false)} busy={loading}
+      submit="Clear conversation" onSave={async () => {
+        await deviceRecord(scope,"assistant-history",vaultKey,[]);
+        setTurns([]);setIncludeHistory(false);setApproval("");
+        return true;
+      }}><p>This removes the local conversation history from this device.</p></Editor>}
   </>;
 }

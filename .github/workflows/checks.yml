@@ -1,0 +1,126 @@
+name: Finance Atlas checks
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  web-and-api:
+    runs-on: windows-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      ATLAS_RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run check
+      - run: npm run test:browser
+      - run: npm ci --prefix api
+      - run: npm test --prefix api
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --prefix api --omit=dev --audit-level=high
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --require-hashes -r requirements.txt
+      - run: python -m pip check
+      - run: python -m unittest discover -v
+      - name: Audit the locked Python dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/atlas-pip-audit"
+          "$RUNNER_TEMP/atlas-pip-audit/bin/python" -m pip install pip-audit==2.10.1
+          "$RUNNER_TEMP/atlas-pip-audit/bin/pip-audit" -r requirements.txt --require-hashes --disable-pip --progress-spinner off
+
+  container-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, agent]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build --pull --tag finance-atlas-${{ matrix.service }}:ci ${{ matrix.service }}
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: finance-atlas-${{ matrix.service }}:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: '0'
+
+  native:
+    runs-on: windows-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: rustup update stable
+      - run: npm ci
+      - run: npm run desktop:build -- --debug --no-bundle
+      - run: cargo +stable test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Ensure the Evergreen WebView2 runtime is available
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $runtimeKeys = @("HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client", "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$client")
+          $version = $runtimeKeys | ForEach-Object { Get-ItemPropertyValue -Path $_ -Name pv -ErrorAction SilentlyContinue } | Where-Object { [version]$_ -gt [version]'0.0.0.0' } | Select-Object -First 1
+          if ($version) {
+            Write-Output "WebView2 runtime $version is installed."
+          } else {
+            $installer = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $installer
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation(?:,|$)') { throw 'Invalid WebView2 installer signature.' }
+            $process = Start-Process -FilePath $installer -ArgumentList '/silent','/install' -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "WebView2 installation failed with exit code $($process.ExitCode)." }
+          }
+      - name: Run WebView2 smoke test without elevation
+        shell: pwsh
+        run: |
+          # WebView2 ignores external debugger flags for elevated hosts.
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            node tests/desktop-smoke.mjs
+            exit $LASTEXITCODE
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'atlas-gsudo.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'atlas-gsudo'
+          Invoke-WebRequest -Uri 'https://github.com/gerardog/gsudo/releases/download/v2.6.1/gsudo.portable.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne '21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44') { throw 'Invalid gsudo archive checksum.' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          $gsudo = Join-Path $directory 'x64/gsudo.exe'
+          if (!(Test-Path -LiteralPath $gsudo)) { throw 'Missing gsudo executable.' }
+          $user = $identity.User.Value
+          icacls.exe $env:GITHUB_WORKSPACE /grant "*${user}:(OI)(CI)RX"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $gsudo --integrity Medium --chdir $env:GITHUB_WORKSPACE (Get-Command node.exe).Source tests/desktop-smoke.mjs
+          exit $LASTEXITCODE

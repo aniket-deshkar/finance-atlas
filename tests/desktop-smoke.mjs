@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import {selectLockedPdf} from "./pdf-fixture.mjs";
 import {spawn, spawnSync} from "node:child_process";
-import {createServer} from "node:net";
-import {existsSync, mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {resolve, sep} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -11,27 +10,37 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const executable = resolve(root, "src-tauri/target/debug/finance-atlas.exe");
 assert.ok(existsSync(executable), "Build a debug executable with npm.cmd run desktop:dev or desktop:build -- --debug --no-bundle.");
 const scratch = mkdtempSync(resolve(tmpdir(), "finance-atlas-desktop-test-"));
-const listener = createServer();
-await new Promise(r => listener.listen(0, "127.0.0.1", r));
-const port = listener.address().port;
-await new Promise(r => listener.close(r));
+const portFile = resolve(scratch, "EBWebView", "DevToolsActivePort");
 let app, socket;
 let sequence = 0;
 const pending = new Map(), errors = [];
-const env = {...process.env, ATLAS_DESKTOP_TEST_PROFILE: scratch, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --disable-background-networking`};
+const env = {...process.env, ATLAS_DESKTOP_TEST_PROFILE: scratch, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:
+  "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1 --disable-background-networking"};
 
 async function connect() {
+  rmSync(portFile, {force: true});
   app = spawn(executable, [], {cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: false});
   let stderr = "";
   app.stderr.on("data", b => {stderr += String(b);});
   let page;
-  for (let i = 0; i < 160; i++) {
-    try { page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(p => p.type === "page" && /tauri\.localhost|tauri:/.test(p.url)); } catch {}
+  let discovery = "WebView2 has not published a debug port";
+  const deadline = Date.now() + 35_000;
+  while (Date.now() < deadline) {
+    if (existsSync(portFile)) {
+      try {
+        const port = Number(readFileSync(portFile, "utf8").split(/\r?\n/, 1)[0]);
+        assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+        const response = await fetch(`http://127.0.0.1:${port}/json/list`, {signal: AbortSignal.timeout(1000)});
+        const targets = await response.json();
+        page = targets.find(p => p.type === "page" && /tauri\.localhost|tauri:/.test(p.url));
+        discovery = `WebView2 published ${targets.length} target(s)`;
+      } catch (error) {discovery = "CDP discovery failed: " + error.message;}
+    }
     if (page) break;
     if (app.exitCode !== null) throw Error("Desktop exited: " + stderr);
     await new Promise(r => setTimeout(r, 100));
   }
-  assert.ok(page, "The isolated desktop webview started: " + stderr);
+  assert.ok(page, discovery + ". " + stderr);
   socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((r, reject) => {socket.addEventListener("open", r, {once: true});socket.addEventListener("error", reject, {once: true});});
   socket.addEventListener("message", event => {

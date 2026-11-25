@@ -11,6 +11,22 @@ export type Envelope = {
 
 const aad = new TextEncoder().encode("finance-atlas-web-vault-v1");
 const storeName = "workspace";
+const recordsStore = "deviceRecords";
+const deviceBackupFormat = "finance-atlas-device-backup-v1";
+const deviceBackupAad = new TextEncoder().encode(deviceBackupFormat);
+export const deviceBackupLimit = 42_000_000;
+const devicePayloadLimit = 30_000_000;
+const deviceRecordLimit = 256;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", {fatal: true});
+type SealedRecord = {iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer};
+type BackupRecord = {id: string; json: string};
+
+function deviceAad(recordId: string) {return encoder.encode("finance-atlas-device-v1/" + recordId);}
+function scopeRange(scope: string) {return IDBKeyRange.bound(scope + "/", scope + "0", false, true);}
+function validDeviceId(id: string) {
+  return /^(?:document-index|assistant-history|policy-research|original-[a-f0-9]{64})$/.test(id);
+}
 
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -27,23 +43,116 @@ function database(): Promise<IDBDatabase> {
 export async function deviceRecord<T>(scope: string, id: string, key: CryptoKey, value?: T): Promise<T | undefined> {
   const db = await database();
   const recordId = scope + "/" + id;
-  const additionalData = new TextEncoder().encode("finance-atlas-device-v1/" + recordId);
+  const additionalData = deviceAad(recordId);
   try {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const sealed = value === undefined ? undefined : {
       iv, data: await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData}, key, new TextEncoder().encode(JSON.stringify(value)))
     };
-    const result = await new Promise<{iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer} | undefined>((resolve, reject) => {
-      const tx = db.transaction("deviceRecords", sealed ? "readwrite" : "readonly");
-      const collection = tx.objectStore("deviceRecords");
+    const result = await new Promise<SealedRecord | undefined>((resolve, reject) => {
+      const tx = db.transaction(recordsStore, sealed ? "readwrite" : "readonly");
+      const collection = tx.objectStore(recordsStore);
       const request = sealed ? collection.put(sealed, recordId) : collection.get(recordId);
       tx.oncomplete = () => resolve(sealed ? undefined : request.result);
       tx.onabort = tx.onerror = () => reject(tx.error ?? Error("Local storage could not be updated."));
     });
     if (!result) return value;
     const clear = await crypto.subtle.decrypt({name: "AES-GCM", iv: result.iv, additionalData}, key, result.data);
-    return JSON.parse(new TextDecoder().decode(clear)) as T;
+    try {return JSON.parse(decoder.decode(clear)) as T;}
+    finally {new Uint8Array(clear).fill(0);}
   } finally {db.close();}
+}
+
+export async function exportDeviceRecords(salt: Uint8Array<ArrayBuffer>, key: CryptoKey) {
+  const db = await database(), scope = base64(salt);
+  let sealed: {id: string; value: SealedRecord}[];
+  try {
+    sealed = await new Promise((resolve, reject) => {
+      const tx = db.transaction(recordsStore, "readonly");
+      const request = tx.objectStore(recordsStore).openCursor(scopeRange(scope));
+      const records: {id: string; value: SealedRecord}[] = [];
+      let total = 0;
+      let overflow = false;
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        const id = String(cursor.key).slice(scope.length + 1), value = cursor.value as SealedRecord;
+        total += value.data.byteLength;
+        if (!validDeviceId(id) || total > devicePayloadLimit || records.length === deviceRecordLimit) {
+          overflow = true;tx.abort();return;
+        }
+        records.push({id, value});
+        cursor.continue();
+      };
+      tx.oncomplete = () => resolve(records);
+      tx.onabort = () => reject(overflow ? Error("This device library exceeds the supported backup size or format.") : tx.error);
+    });
+  } finally {db.close();}
+  if (!sealed.length) throw Error("This vault has no documents or Assistant history on this device.");
+  const records: BackupRecord[] = [];
+  for (const {id, value} of sealed) {
+    const clear = await crypto.subtle.decrypt({name:"AES-GCM", iv:value.iv, additionalData:deviceAad(scope + "/" + id)}, key, value.data);
+    try {records.push({id, json:decoder.decode(clear)});}
+    finally {new Uint8Array(clear).fill(0);}
+  }
+  const payload = encoder.encode(JSON.stringify(records)), iv = crypto.getRandomValues(new Uint8Array(12));
+  try {
+    if (payload.byteLength > devicePayloadLimit) throw Error("This device library exceeds the supported backup size.");
+    const ciphertext = await crypto.subtle.encrypt({name:"AES-GCM", iv, additionalData:deviceBackupAad}, key, payload);
+    return JSON.stringify({format:deviceBackupFormat, salt:scope, iv:base64(iv), ciphertext:base64(new Uint8Array(ciphertext))});
+  } finally {payload.fill(0);}
+}
+
+export async function restoreDeviceRecords(text: string, passphrase: string, target: Envelope, key: CryptoKey, signal: AbortSignal) {
+  if (text.length > deviceBackupLimit) throw Error("The device backup exceeds 42 MB.");
+  const backup = JSON.parse(text);
+  if (backup?.format !== deviceBackupFormat || [backup.salt, backup.iv, backup.ciphertext].some(value => typeof value !== "string"))
+    throw Error("Choose a Finance Atlas device backup.");
+  const salt = unbase64(backup.salt), iv = unbase64(backup.iv), ciphertext = unbase64(backup.ciphertext);
+  if (salt.length !== 16 || iv.length !== 12 || ciphertext.length < 17 || ciphertext.length > devicePayloadLimit + 16)
+    throw Error("The device backup header is invalid.");
+  const sourceKey = await deriveKey(passphrase, salt);
+  signal.throwIfAborted();
+  let clear: ArrayBuffer;
+  try {clear = await crypto.subtle.decrypt({name:"AES-GCM", iv, additionalData:deviceBackupAad}, sourceKey, ciphertext);}
+  catch {throw Error("The backup passphrase is incorrect or the file was damaged.");}
+  let records: BackupRecord[];
+  try {records = JSON.parse(decoder.decode(clear));}
+  finally {new Uint8Array(clear).fill(0);}
+  if (!Array.isArray(records) || !records.length || records.length > deviceRecordLimit ||
+    records.some(record => !record || typeof record.id !== "string" || !validDeviceId(record.id) || typeof record.json !== "string") ||
+    new Set(records.map(record => record.id)).size !== records.length) throw Error("The device backup contains unsupported records.");
+  const scope = base64(target.salt), sealed: {id: string; value: SealedRecord}[] = [];
+  for (const record of records) {
+    signal.throwIfAborted();
+    const id = scope + "/" + record.id, iv = crypto.getRandomValues(new Uint8Array(12)), bytes = encoder.encode(record.json);
+    try {
+      const data = await crypto.subtle.encrypt({name:"AES-GCM", iv, additionalData:deviceAad(id)}, key, bytes);
+      sealed.push({id, value:{iv, data}});
+    } finally {bytes.fill(0);}
+  }
+  const db = await database();
+  try {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([storeName, recordsStore], "readwrite");
+      const store = tx.objectStore(recordsStore);
+      let problem: Error | undefined;
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(problem ?? tx.error ?? Error("The device library could not be restored."));
+      const current = tx.objectStore(storeName).get("ledger"), count = store.count(scopeRange(scope));
+      count.onsuccess = () => {
+        if (signal.aborted || current.result?.revision !== target.revision) {
+          problem = Error("The vault changed during restore. Open the backup again.");tx.abort();return;
+        }
+        if (count.result) {
+          problem = Error("Restore into a vault with an empty device library so existing records stay intact.");tx.abort();return;
+        }
+        for (const item of sealed) store.add(item.value, item.id);
+      };
+    });
+  } finally {db.close();}
+  return records.length;
 }
 
 export async function readVault(): Promise<Envelope | null> {

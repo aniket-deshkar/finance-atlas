@@ -2,7 +2,7 @@
 import type {ReactNode} from "react";
 
 import { useState } from "react";
-import { balance, displayPeriod, field, hasReversal, kinds, latestStatement, minor, money, monthLabel, monthShift, reportPeriod, rows, statementAmounts, totals, type Ledger } from "../lib/ledger";
+import { balance, displayPeriod, field, hasReversal, kinds, latestStatement, minor, money as formatMoney, monthLabel, monthShift, reportPeriod, rows, statementAmounts, totals, type Ledger } from "../lib/ledger";
 import { budgetLimit, cashMetrics, cardBills, cardUsage, loans, personal, postedRows, schedule, sum } from "../lib/finance";
 import { widgetVisible, type View } from "../lib/navigation";
 import { Icon, type IconName } from "./icons";
@@ -13,7 +13,8 @@ function Panel({title, subtitle, children, action, hidden = false}: {title: stri
     <button className="icon-button" onClick={action} aria-label={"Open " + title.toLowerCase()}><Icon name="right" /></button></header>{children}</section>;
 }
 
-export function Overview({ledger, month, asOf, navigate, attention, selectMonth}: {ledger: Ledger; month: string; asOf: string; navigate: (view: View, accountId?: string) => void; attention?: ReactNode; selectMonth: (month: string) => void}) {
+export function Overview({ledger, month, asOf, privacy, navigate, attention, selectMonth}: {ledger: Ledger; month: string; asOf: string; privacy: boolean; navigate: (view: View, accountId?: string) => void; attention?: ReactNode; selectMonth: (month: string) => void}) {
+  const money = privacy ? () => "Hidden" : formatMoney;
   const [cardIndex, setCardIndex] = useState(0);
   const [flowIndex, setFlowIndex] = useState(5);
   const [spendCategory, setSpendCategory] = useState("");
@@ -58,11 +59,13 @@ export function Overview({ledger, month, asOf, navigate, attention, selectMonth}
           <button onClick={() => navigate("Debt & credit")}><span>Cash less card liability</span><strong className="financial-value">{money(liquid - outstanding)}</strong></button></div>
       </section>
       <div className="atlas-kpis" hidden={!widgetVisible(ledger, "kpiCards")}>{metrics.map(m => <button key={m.label} className={"atlas-kpi " + m.tone} onClick={() => navigate(m.target)} hidden={m.label === "Projected savings" && !widgetVisible(ledger, "upcomingBills")}>
-        <span className="kpi-top"><span>{m.label}</span><Icon name={m.icon} /></span><strong className="financial-value">{money(m.amount)}</strong><small>{m.note}</small>
+        <span className="kpi-top"><span>{m.label}</span><Icon name={m.icon} /></span><strong className="financial-value">{money(m.amount)}</strong><small>{privacy && m.label === "Net savings" ? "Income less spending" : m.note}</small>
         <span className="kpi-line" aria-hidden="true"><svg viewBox="0 0 90 50"><circle cx="66" cy="42" r="30" /><circle cx="66" cy="42" r="20" /><circle cx="66" cy="42" r="40" /></svg></span>
       </button>)}</div>
     </div>
     {attention}
+    {privacy ? <section className="atlas-panel"><h2>Charts and recent activity are hidden</h2>
+      <p>Use Show amounts to view spending, balances, and activity.</p></section> : <>
     <div className="atlas-charts">
       <Panel title="Cash flow" subtitle={"Six periods ending " + monthLabel(month)} action={() => navigate("Insights")} hidden={!widgetVisible(ledger, "cashFlow")}>
         <div className="cash-bars" role="img" aria-label={history.map((h, i) => `${monthLabel(labels[i])}: income ${money(h.income)}, spending ${money(h.spending)}`).join("; ")}>
@@ -104,5 +107,6 @@ export function Overview({ledger, month, asOf, navigate, attention, selectMonth}
           <div className="mini-card-footer"><span>{usage?.limit ? `${(usage.utilization ?? 0).toFixed(1)}% limit used` : "Limit unset"}{statement && <small className="financial-value">{money(statementAmounts(ledger, statement, asOf).due)} statement due</small>}</span><div className="mini-card-controls"><button className="icon-button" disabled={cards.length < 2} onClick={() => setCardIndex(i => (i + cards.length - 1) % Math.max(1, cards.length))} aria-label="Previous card"><Icon name="left" /></button><button className="icon-button" disabled={cards.length < 2} onClick={() => setCardIndex(i => i + 1)} aria-label="Next card"><Icon name="right" /></button></div></div></> : <div className="atlas-empty"><Icon name="card" /><strong>Your cards, together</strong><p>Add a card in Accounts to get started.</p></div>}
       </Panel>
     </div>
+    </>}
   </div>;
 }

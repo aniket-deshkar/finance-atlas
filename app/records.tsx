@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { addEntry, balance, field, hasReversal, minor, money, monthLabel, monthShift, row, rows, type Entry, type Ledger, type Row } from "../lib/ledger";
 import { cardCycle, cardUsage, cashMetrics, categoryActual, debtRows, matchRecordedBills, netPosition, reconcileBalance,
   repeatingPayments, settingsV6, simulateDebt, sum } from "../lib/finance";
 import { attachReceipt, base64, csvEncode, download, importStatement, parseStatement, receiptArchive, statementMatches, unbase64, type Staged } from "../lib/files";
 import { accountName, amount, Check, Editor, Input, Panel, Select, Stats, Table, value, type FeatureProps } from "./feature-ui";
-import { deviceRecord, openEncryptedBackup, serializeEnvelope, snapshots, type Envelope } from "../lib/vault";
+import { deriveKey, deviceBackupLimit, deviceRecord, exportDeviceRecords, openEncryptedBackup, restoreDeviceRecords, serializeEnvelope, snapshots, type Envelope } from "../lib/vault";
 import { documentDigest, saveDocumentIndex } from "./documents";
 import { rowKey } from "../lib/documents";
 import type { BackupControls } from "./backup";
@@ -205,7 +205,7 @@ export function RewardsView(props: FeatureProps) {
 export function ReceiptsView({ledger, save, busy}: FeatureProps) {
   const [transaction, setTransaction] = useState(ledger.transactions[0]?.id ?? ""), [error, setError] = useState("");
   return <div className="stack"><Panel title="Receipts & attachments" subtitle="Files are encrypted with your ledger and included in its backups"
-    action={<button onClick={() => download("Finance_Atlas_Full_Archive.zip", receiptArchive(ledger))}>Export data + receipts ZIP</button>}>
+    action={<button onClick={() => download("Finance_Atlas_Full_Archive.zip", receiptArchive(ledger))}>Export unencrypted receipts ZIP</button>}>
     <div className="filter-row"><label>Transaction<select value={transaction} onChange={e => setTransaction(e.target.value)}><option value="">Choose an entry</option>
       {ledger.transactions.toSorted((a, b) => b.date.localeCompare(a.date)).slice(0, 1000).map(t => <option key={t.id} value={t.id}>{t.date} · {t.note || t.type}</option>)}</select></label>
       <label>Attach image / PDF<input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" disabled={busy || !transaction}
@@ -222,23 +222,66 @@ export function ReceiptsView({ledger, save, busy}: FeatureProps) {
     </Panel></div>;
 }
 
-export function SettingsExtras(props: FeatureProps & {section: string; envelope: Envelope; backups: BackupControls; previewRestore: (ledger: Ledger) => void}) {
-  const {ledger, asOf, month, save, busy, backups, envelope, previewRestore, section} = props;
+export function SettingsExtras(props: FeatureProps & {section: string; envelope: Envelope; vaultKey: CryptoKey; backups: BackupControls; previewRestore: (ledger: Ledger) => void}) {
+  const {ledger, asOf, month, save, busy, backups, envelope, vaultKey, previewRestore, section} = props;
   const cfg = settingsV6(ledger);
   const ui = row(ledger.settings.uiCustomization), savedOrder = Array.isArray(ui.tabOrder) ? ui.tabOrder as string[] : [];
   const order = [...savedOrder.filter(id => Object.values(viewIds).includes(id)), ...Object.values(viewIds).filter(id => !savedOrder.includes(id))];
   const [category, setCategory] = useState(false), [template, setTemplate] = useState(false), [encrypted, setEncrypted] = useState(""), [recovery, setRecovery] = useState<{day: string; envelope: Envelope}[] | null>(null);
   const [notificationMessage, setNotificationMessage] = useState("");
   const [exportMessage, setExportMessage] = useState("");
+  const [deviceBackup, setDeviceBackup] = useState<File | null>(null);
+  const [pastDevice, setPastDevice] = useState<Envelope | null>(null);
+  const [deviceMessage, setDeviceMessage] = useState("");
+  const [deviceBusy, setDeviceBusy] = useState(false);
+  const deviceOperation = useRef<AbortController | null>(null);
+  useEffect(() => () => {deviceOperation.current?.abort();}, [section, vaultKey]);
+
+  async function useDeviceBackup(action: (signal: AbortSignal) => Promise<string>) {
+    if (deviceOperation.current) return false;
+    const operation = new AbortController();
+    deviceOperation.current = operation;
+    setDeviceMessage("");setDeviceBusy(true);
+    try {
+      const message = await action(operation.signal);
+      operation.signal.throwIfAborted();
+      setDeviceMessage(message);
+      return true;
+    } catch (error) {
+      if (!operation.signal.aborted) setDeviceMessage(error instanceof Error ? error.message : "The device backup could not be processed.");
+      return false;
+    } finally {deviceOperation.current = null;setDeviceBusy(false);}
+  }
+
+  async function downloadDevice(source: Envelope, key: CryptoKey, signal: AbortSignal) {
+    const archive = await exportDeviceRecords(source.salt, key);
+    signal.throwIfAborted();
+    download("Finance_Atlas_Device_" + asOf + ".atlasdevice", archive);
+    return "Encrypted device backup prepared.";
+  }
   return <>
     {section === "Data, backup & security" && <><Panel title="Daily encrypted backups">
       <p>{backups.message}</p><p className="muted">{backups.folder ? "Selected folder · " + backups.folder : "Choose a backup folder on your device."}</p>
       <p className="muted">Copies run daily and after changes while this workspace is open and unlocked. A folder inside OneDrive may sync through your OneDrive settings.</p>
+      <p className="muted">Ledger backups include transactions and their receipts. Download a separate encrypted device backup for documents and Assistant history.</p>
       {backups.lastAt && <small>Last verified {new Date(backups.lastAt).toLocaleString("en-IN")}</small>}
       <div className="button-row section-gap"><button onClick={() => void backups.choose()}>Choose backup folder</button>
         <button disabled={!backups.folder} onClick={() => void backups.toggle()}>{backups.enabled ? "Pause" : "Enable"} daily backups</button>
         <button disabled={!backups.enabled} onClick={() => void backups.run()}>Back up now</button>
         <button onClick={() => download("Finance_Atlas_" + asOf + ".atlasenc", serializeEnvelope(envelope))}>Download encrypted backup</button></div>
+    </Panel>
+    <Panel title="Encrypted device library backup">
+      <p>Back up document originals, extracted records, and Assistant history separately. Unlock the backup with the vault passphrase used when it was saved.</p>
+      <div className="button-row">
+        <button type="button" disabled={busy || deviceBusy} onClick={() => void useDeviceBackup(signal => downloadDevice(envelope, vaultKey, signal))}>Download device backup</button>
+        <label>Restore into an empty device library<input type="file" name="deviceBackup" accept=".atlasdevice,application/json" disabled={busy || deviceBusy}
+          onChange={event => {
+            const file = event.currentTarget.files?.[0];event.currentTarget.value = "";
+            if (file && file.size <= deviceBackupLimit) {setDeviceMessage("");setDeviceBackup(file);}
+            else if (file) setDeviceMessage("Choose a device backup no larger than 42 MB.");
+          }} /></label>
+      </div>
+      {deviceMessage && <p role="status">{deviceMessage}</p>}
     </Panel>
     <Panel title="Encrypted restore & recovery">
       <label>Restore encrypted backup<input type="file" accept=".atlasenc,application/json" onChange={async e => {const file = e.target.files?.[0];e.target.value = "";if (file && file.size <= 42_000_000) setEncrypted(await file.text());}} /></label>
@@ -362,8 +405,29 @@ export function SettingsExtras(props: FeatureProps & {section: string; envelope:
     {encrypted && <Editor title="Unlock backup for preview" {...props} close={() => setEncrypted("")} submit="Preview restore" onSave={async data => {
       const restored = await openEncryptedBackup(encrypted, String(data.get("passphrase") ?? ""));previewRestore(restored);return true;
     }}><Input name="passphrase" label="Backup passphrase" type="password" /></Editor>}
+    {deviceBackup && <Editor title="Restore device backup" {...props} busy={busy || deviceBusy}
+      close={() => setDeviceBackup(null)} submit="Restore device library" onSave={data => useDeviceBackup(async signal => {
+        const count = await restoreDeviceRecords(await deviceBackup.text(), String(data.get("passphrase") ?? ""), envelope, vaultKey, signal);
+        window.dispatchEvent(new Event("atlas-documents-changed"));
+        window.dispatchEvent(new Event("atlas-device-library-restored"));
+        return count + " encrypted device records restored.";
+      })}>
+      <p>This adds records only if this vault's device library is empty. The ledger stays as it is.</p>
+      <Input name="passphrase" label="Original vault passphrase" type="password" maxLength={128} />
+      {deviceMessage && <p role="status">{deviceMessage}</p>}
+    </Editor>}
+    {pastDevice && <Editor title="Export device records from this vault" {...props} busy={busy || deviceBusy}
+      close={() => setPastDevice(null)} submit="Download encrypted device backup" onSave={data => useDeviceBackup(async signal => {
+        try {return await downloadDevice(pastDevice, await deriveKey(String(data.get("passphrase") ?? ""), pastDevice.salt), signal);}
+        catch (error) {if (error instanceof DOMException && error.name === "OperationError") throw Error("The original vault passphrase is incorrect.");throw error;}
+      })}>
+      <p>Export documents and chats that still belong to this earlier vault on this device.</p>
+      <Input name="passphrase" label="Original vault passphrase" type="password" maxLength={128} />
+      {deviceMessage && <p role="status">{deviceMessage}</p>}
+    </Editor>}
     {recovery && <Editor title="Local recovery snapshots" {...props} close={() => setRecovery(null)}>
-      {recovery.map(item => <div className="button-row section-gap" key={item.day}><span>{item.day}</span><button onClick={() => {setRecovery(null);setEncrypted(serializeEnvelope(item.envelope));}}>Preview restore</button></div>)}
+      {recovery.map(item => <div className="button-row section-gap" key={item.day}><span>{item.day}</span><button onClick={() => {setRecovery(null);setEncrypted(serializeEnvelope(item.envelope));}}>Preview restore</button>
+        {base64(item.envelope.salt) !== base64(envelope.salt) && <button onClick={() => {setDeviceMessage("");setRecovery(null);setPastDevice(item.envelope);}}>Export device records</button>}</div>)}
       {!recovery.length && <p className="muted">A local recovery copy is created shortly after saving or opening the workspace.</p>}</Editor>}
   </>;
 }

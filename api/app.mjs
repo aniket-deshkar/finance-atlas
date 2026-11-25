@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import {randomUUID} from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
 import {registerCloudRoutes} from "./cloud-routes.mjs";
 import {registerAssistant} from "./assistant.mjs";
@@ -24,12 +25,13 @@ function parseUpdate(body) {
   return { expectedRevision, envelope: {version, revision, salt, iv, ciphertext} };
 }
 
-export async function createApi({ ownerUid, verifyToken, storage, cloud, assistant, market, rateLimitEnabled = true }) {
+export async function createApi({ ownerUid, verifyToken, storage, cloud, assistant, market, rateLimitEnabled = true, auditLog, releaseRevision }) {
   if (!ownerUid || !verifyToken || !storage) throw new Error("Configure the owner identity and encrypted vault store.");
-  const app = Fastify({bodyLimit: 710_000, logger: false});
+  const app = Fastify({bodyLimit: 710_000, requestTimeout: 40_000, logger: false, requestIdHeader: false, genReqId: () => randomUUID()});
   if (rateLimitEnabled) await app.register(rateLimit, {max: 90, timeWindow: "1 minute"});
   app.addHook("onRequest", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
+    reply.header("X-Request-Id", request.id);
     const origin = request.headers.origin;
     if ((cloud || assistant) && ["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"].includes(origin)) {
       reply.header("Access-Control-Allow-Origin", origin).header("Vary", "Origin");
@@ -40,8 +42,15 @@ export async function createApi({ ownerUid, verifyToken, storage, cloud, assista
       }
     }
   });
+  if (auditLog) app.addHook("onResponse", async (request, reply) => {
+    auditLog({
+      severity: reply.statusCode >= 500 ? "ERROR" : reply.statusCode >= 400 ? "WARNING" : "INFO",
+      event: "atlas.http", requestId: request.id, method: request.method, route: request.routeOptions.url || "unmatched",
+      status: reply.statusCode, durationMs: Math.round(reply.elapsedTime)
+    });
+  });
   if (cloud || assistant) app.options("/v1/*", async (_request, reply) => reply.code(403).send());
-  const health = async () => ({status: "ok"});
+  const health = async () => ({status: "ok", ...(releaseRevision ? {revision: releaseRevision} : {})});
   app.get("/health", health);
   app.get("/healthz", health);
 

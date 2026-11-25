@@ -4,14 +4,14 @@ import {createPortal} from "react-dom";
 import {analysisContext, currentAttention, reviewProposals, updateReview, type AgentResult, type AttentionItem} from "../lib/attention";
 import {checkedJson, cloudConfigured, cloudConnected, cloudFetch, connectCloud, disconnectCloud, json} from "../lib/cloud";
 import {fetchSnapshot, publishSnapshot, readHead, type CloudHead} from "../lib/cloud-sync";
-import {download} from "../lib/files";
+import {base64, download} from "../lib/files";
 import {money, rows, type Ledger} from "../lib/ledger";
 import {views, type View} from "../lib/navigation";
-import {preference, saveSnapshot, serializeEnvelope, type Envelope} from "../lib/vault";
+import {exportDeviceRecords, preference, saveSnapshot, serializeEnvelope, type Envelope} from "../lib/vault";
 import type {FeatureProps} from "./feature-ui";
 
 type Props = FeatureProps & {
-  visible: boolean; privacy: boolean; envelope: Envelope; cloudMount: HTMLElement | null; navigate: (view: View, target?: string) => void;
+  visible: boolean; privacy: boolean; envelope: Envelope; vaultKey: CryptoKey; cloudMount: HTMLElement | null; navigate: (view: View, target?: string) => void;
   restore: (remote: Envelope, localRevision: string, passphrase: string, signal: AbortSignal) => Promise<void>;
   reissue: (localRevision: string) => Promise<Envelope>;
 };
@@ -19,7 +19,7 @@ type Conflict = {head: CloudHead; localRevision: string};
 const syncPref = "cloud-sync-base:" + process.env.NEXT_PUBLIC_ATLAS_FIREBASE_PROJECT + ":" + process.env.NEXT_PUBLIC_ATLAS_ORIGIN;
 const message = (problem: unknown) => problem instanceof Error ? problem.message : typeof problem === "string" ? problem : "The operation could not be completed.";
 
-export function AttentionPanel({ledger, month, asOf, busy, save, visible, privacy, envelope, navigate, restore, reissue, cloudMount}: Props) {
+export function AttentionPanel({ledger, month, asOf, busy, save, visible, privacy, envelope, vaultKey, navigate, restore, reissue, cloudMount}: Props) {
   const [connected, setConnected] = useState(cloudConnected), [working, setWorking] = useState(false), [syncEnabled, setSyncEnabled] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null), [notice, setNotice] = useState(""), [error, setError] = useState("");
   const [review, setReview] = useState(false), [approved, setApproved] = useState("");
@@ -30,6 +30,7 @@ export function AttentionPanel({ledger, month, asOf, busy, save, visible, privac
   const context = useMemo(() => analysisContext(ledger, month, asOf), [ledger, month, asOf]);
   const alerts = useMemo(() => currentAttention(ledger, month, asOf, context), [ledger, month, asOf, context]);
   const localRevision = envelope.revision;
+  const differentVault = Boolean(conflict && conflict.head.salt !== base64(envelope.salt));
   const approvalKey = localRevision + ":" + month + ":" + asOf;
   const confirmed = approved === approvalKey;
   const assisted = (rows(ledger.settings.attentionSuggestions) as (AttentionItem & {stale?: boolean})[])
@@ -182,17 +183,28 @@ export function AttentionPanel({ledger, month, asOf, busy, save, visible, privac
     {conflict && <div className="editor-note">
       <h3>Review different vault versions</h3>
       <p>Choose the version to keep. Finance Atlas saves both encrypted versions to local recovery before changing the active copy.</p>
+      {differentVault && <p role="status">The cloud copy belongs to a different vault. Local documents and Assistant history stay with this device's current vault. Download a separate device backup before switching.</p>}
       <div className="button-row">
         <button type="button" disabled={working || busy} onClick={() => download("Finance_Atlas_Local_Conflict.atlasenc", serializeEnvelope(envelope))}>Export local copy</button>
+        {differentVault && <button type="button" disabled={working || busy} onClick={() => void run(async signal => {
+          const backup = await exportDeviceRecords(envelope.salt, vaultKey);
+          signal.throwIfAborted();
+          download("Finance_Atlas_Device_Conflict.atlasdevice", backup);
+        })}>Export device records</button>}
         <button type="button" disabled={working || busy} onClick={() => void run(async signal => download("Finance_Atlas_Cloud_Conflict.atlasenc", serializeEnvelope(await fetchSnapshot(conflict.head, signal))))}>Export cloud copy</button>
         <button type="button" disabled={working || busy} onClick={() => void run(signal => resolveConflict("", false, signal))}>Keep this device’s version</button>
       </div>
       <form onSubmit={event => {
         event.preventDefault();
-        const form = event.currentTarget, passphrase = String(new FormData(form).get("cloudPassphrase") ?? "");
+        const form = event.currentTarget, data = new FormData(form);
+        if (differentVault && !data.has("acknowledgeDeviceRecords")) return;
+        const passphrase = String(data.get("cloudPassphrase") ?? "");
         form.reset();void run(signal => resolveConflict(passphrase, true, signal));
       }}>
-        <label>Cloud vault passphrase <span className="muted">(leave blank if it matches this device)</span><input type="password" name="cloudPassphrase" autoComplete="off" disabled={working || busy} /></label>
+        <label>Cloud vault passphrase {!differentVault && <span className="muted">(leave blank if it matches this device)</span>}
+          <input type="password" name="cloudPassphrase" autoComplete="off" required={differentVault} disabled={working || busy} /></label>
+        {differentVault && <label className="checkbox"><input type="checkbox" name="acknowledgeDeviceRecords" required disabled={working || busy} />
+          I understand that this switch does not carry over documents or chat history</label>}
         <button type="submit" disabled={working || busy}>Use cloud version</button>
       </form>
     </div>}
