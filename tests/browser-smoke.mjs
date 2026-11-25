@@ -341,12 +341,17 @@ async function main() {
     }
   }
   await send("Emulation.setDeviceMetricsOverride", {width: 1440, height: 900, deviceScaleFactor: 1, mobile: false});
-  await evaluate("document.querySelector('.atlas-panel').scrollIntoView({block:'center'})");
-  await until("document.querySelector('.atlas-panel').getAnimations().every(a=>a.playState === 'finished')");
-  const panelPoint = await evaluate("(() => {const r=document.querySelector('.atlas-panel').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()");
-  await send("Input.dispatchMouseEvent", {type: "mouseMoved", ...panelPoint});
-  await until("new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.atlas-panel')).transform).m42 < -2");
-  await send("Input.dispatchMouseEvent", {type: "mouseMoved", x: 0, y: 0});
+  await send("Emulation.setEmulatedMedia", {features: [{name: "prefers-reduced-motion", value: "no-preference"}]});
+  await until("innerWidth === 1440 && document.querySelector('.atlas-panel').getAnimations().every(a=>a.playState === 'finished')");
+  if (await evaluate("matchMedia('(hover: hover) and (pointer: fine)').matches")) {
+    await evaluate("document.querySelector('.atlas-panel').scrollIntoView({block:'center', behavior:'instant'})");
+    const panelPoint = await evaluate("(() => {const r=document.querySelector('.atlas-panel').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()");
+    await send("Input.dispatchMouseEvent", {type: "mouseMoved", ...panelPoint});
+    await until("new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.atlas-panel')).transform).m42 < -2");
+    await send("Input.dispatchMouseEvent", {type: "mouseMoved", x: 0, y: 0});
+  } else {
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.atlas-panel')).transform"), "none", "The panel stays flat without a fine pointer");
+  }
   await click("Accounts");
   await click("Go back");
   await until("document.querySelector('h1')?.textContent === 'Dashboard'");
