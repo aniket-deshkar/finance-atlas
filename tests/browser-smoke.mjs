@@ -98,6 +98,19 @@ async function main() {
   };
   const set = (selector, value) => evaluate("document.querySelector(" + JSON.stringify(selector) + ").value = " + JSON.stringify(value));
   const submit = () => evaluate("document.querySelector('form').requestSubmit()");
+  const reload = async () => {
+    const loaded = new Promise(resolve => {
+      const listener = event => {
+        if (JSON.parse(event.data).method === "Page.loadEventFired") {
+          socket.removeEventListener("message", listener);
+          resolve();
+        }
+      };
+      socket.addEventListener("message", listener);
+    });
+    await send("Page.reload");
+    await loaded;
+  };
   await send("Runtime.enable");
   await send("Page.enable");
   await send("Network.enable");
@@ -224,7 +237,19 @@ async function main() {
   await click("Card statements");
   assert.match(await evaluate("document.querySelector('table tbody').innerText"), /32\.75.*47\.25/s);
   assert.deepEqual(await evaluate("Object.keys(localStorage)"), ["atlas-appearance"], "Only the nonfinancial theme preference is stored outside the encrypted vault.");
-  await send("Page.reload");
+  await reload();
+  await until("document.querySelector('h1')?.textContent === 'Card statements'");
+  assert.match(await evaluate("location.hash"), /statements/);
+  assert.equal(await evaluate("new Promise((resolve,reject)=>{const r=indexedDB.open('finance-atlas-web-v1');r.onsuccess=()=>{const db=r.result,token=JSON.parse(sessionStorage.getItem('atlas-tab-session')).token,q=db.transaction('preferences').objectStore('preferences').get('session/'+token);q.onsuccess=()=>{resolve(q.result.wrapped instanceof ArrayBuffer && !q.result.key);db.close()};q.onerror=()=>reject(q.error)}})"), true, "Refresh storage contains a wrapped key");
+  await click("Accounts");
+  await evaluate("history.back()");
+  await until("document.querySelector('h1')?.textContent === 'Card statements'");
+  await evaluate("history.forward()");
+  await until("document.querySelector('h1')?.textContent === 'Accounts'");
+  await click("Go back");
+  await until("document.querySelector('h1')?.textContent === 'Card statements'");
+  await click("Lock workspace");
+  await reload();
   await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
   await set("[name=passphrase]", "wrong-passphrase");
   await submit();
@@ -427,12 +452,9 @@ async function main() {
   await send("Emulation.setDeviceMetricsOverride", {width:1440,height:900,deviceScaleFactor:1,mobile:false});
   await click("Collapse sidebar");
   await until("document.querySelector('.workspace').dataset.collapsed === 'true'");
-  await send("Page.reload");
-  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
-  assert.equal(await evaluate("document.documentElement.dataset.theme"), "dark", "Lock screen retains the theme");
-  await set("[name=passphrase]", "only-fictional-test-secret-123");
-  await submit();
-  await until("document.querySelector('h1')?.textContent === 'Dashboard'");
+  await reload();
+  await until("!!document.querySelector('.workspace')");
+  assert.equal(await evaluate("document.documentElement.dataset.theme"), "dark", "Refresh retains the theme");
   assert.equal(await evaluate("document.querySelector('.workspace').dataset.collapsed"), "true", "Sidebar preference persists");
   await click("Expand sidebar");
   await until("document.querySelector('.workspace').dataset.collapsed === 'false'");

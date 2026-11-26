@@ -6,14 +6,14 @@ import {
   kinds, money, monthLabel, monthShift, reportPeriod, row, rows, statementAmounts, today, validDate,
   type Account, type EntryKind, type Ledger
 } from "../lib/ledger";
-import { decryptVault, deriveKey, installVault, preference, readVault, saveSnapshot, saveVault, type Envelope } from "../lib/vault";
+import { decryptVault, deriveKey, forgetSession, rememberSession, resumeSession, installVault, preference, readVault, saveSnapshot, saveVault, type Envelope } from "../lib/vault";
 import { cloudConfigured, connectCloud, disconnectCloud } from "../lib/cloud";
 import { fetchSnapshot, readHead, type CloudHead } from "../lib/cloud-sync";
 import { AttentionPanel } from "./attention";
 import { Icon } from "./icons";
 import { Overview } from "./overview";
 import { BackgroundArt } from "./visuals";
-import {orderedViews, type View} from "../lib/navigation";
+import {orderedViews, views, viewIds, type View} from "../lib/navigation";
 import {PeriodPicker, Sidebar} from "./shell";
 import { enforceHistory, matchRecordedBills, obligations, reconcileBalance, removeUnusedAccount, saveTransaction, settingsV6, validateFinance } from "../lib/finance";
 import { base64, download as downloadFile, migrateEmiBackup, readLegacyArchive } from "../lib/files";
@@ -219,6 +219,21 @@ export default function Page() {
   const idleMinutes = session ? Number(settingsV6(session.ledger).idleLockMinutes) : 0;
   const unlocked = !!session;
   useEffect(() => {
+    const restoreRoute = () => {
+      const url = new URL(window.location.hash.slice(1) || "/overview", window.location.origin);
+      const destination = views.find(item => "/" + viewIds[item] === url.pathname) ?? "Overview";
+      const accountId = url.searchParams.get("account") ?? "";
+      navigation.current = {view: destination, accountId, scroll: 0};
+      setView(destination);setFocusedCard(accountId);setEntryOpen(false);setNavDrawer(false);
+      setError("");setNotice("");
+      setBackDepth(Number(window.history.state?.atlasDepth) || 0);
+      requestAnimationFrame(() => workspaceScroll().scrollTo({top: 0}));
+    };
+    restoreRoute();
+    window.addEventListener("popstate", restoreRoute);
+    return () => window.removeEventListener("popstate", restoreRoute);
+  }, []);
+  useEffect(() => {
     if (!unlocked || ![5, 15, 30, 60].includes(idleMinutes)) return;
     let lastActivity = Date.now(), active = true;
     const check = () => {
@@ -292,7 +307,24 @@ export default function Page() {
 
   useEffect(() => {
     let live = true;
-    readVault().then(value => { if (live) setExisting(value); }).catch(() => {
+    readVault().then(async value => {
+      if (!live) return;
+      setExisting(value);
+      if (value) {
+        const key = await resumeSession(value);
+        if (key) {
+          const ledger = validateFinance(await decryptVault(value, key), today());
+          if (!live) return;
+          const restored = {ledger, key, envelope: value};
+          sessionGeneration.current++;
+          activeSession.current = restored;
+          setSession(restored);
+          setMonth(currentMonth(ledger, today()));
+        }
+      }
+      if (live) setExisting(value);
+    }).catch(() => {
+      void forgetSession().catch(() => {});
       if (live) setError("This browser could not open its encrypted workspace storage.");
     });
     return () => { live = false; };
@@ -350,6 +382,7 @@ export default function Page() {
       setClockDay(today());
       setMonth(currentMonth(ledger, today()));
       const unlocked = {ledger, key, envelope};
+      await rememberSession(passphrase, salt, Number(settingsV6(ledger).idleLockMinutes)).catch(() => {});
       sessionGeneration.current++;
       activeSession.current = unlocked;
       setSession(unlocked);
@@ -444,6 +477,9 @@ export default function Page() {
       previousRoutes.current.push({...current, scroll: workspaceScroll().scrollTop});
       if (previousRoutes.current.length > 60) previousRoutes.current.shift();
       setBackDepth(previousRoutes.current.length);
+      const depth = (Number(window.history.state?.atlasDepth) || 0) + 1;
+      window.history.pushState({atlasDepth: depth}, "", "#/" + viewIds[destination] + (accountId ? "?account=" + encodeURIComponent(accountId) : ""));
+      setBackDepth(depth);
     }
     navigation.current = {view: destination, accountId, scroll: 0};
     setView(destination);
@@ -468,6 +504,7 @@ export default function Page() {
 
   function goBack() {
     if (entryOpen) {setEntryOpen(false);return;}
+    if (backDepth > 0) {window.history.back();return;}
     const previous = previousRoutes.current.pop() ?? {view: "Overview" as View, accountId: "", scroll: 0};
     navigation.current = previous;
     setBackDepth(previousRoutes.current.length);
@@ -478,6 +515,8 @@ export default function Page() {
   }
 
   function lock() {
+    void forgetSession().catch(() => {});
+    window.history.replaceState({atlas: true}, "", "#/overview");
     setNavDrawer(false);
     navigation.current = {view: "Overview", accountId: "", scroll: 0};
     previousRoutes.current = [];

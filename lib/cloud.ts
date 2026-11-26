@@ -14,7 +14,7 @@ async function getCloudAuth() {
   if (!cloudConfigured) throw Error("Cloud access has not been configured for this build.");
   sdk ??= Promise.all([import("firebase/app"), import("firebase/auth")]).then(([app, firebase]) => {
     const client = firebase.initializeAuth(app.initializeApp({apiKey, authDomain, projectId}, "finance-atlas-cloud"), {
-      persistence: firebase.inMemoryPersistence,
+      persistence: isDesktop() ? firebase.inMemoryPersistence : firebase.browserSessionPersistence,
       ...(isDesktop() ? {} : {popupRedirectResolver: firebase.browserPopupRedirectResolver})
     });
     auth = client;

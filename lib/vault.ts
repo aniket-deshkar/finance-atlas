@@ -11,6 +11,50 @@ export type Envelope = {
 
 const aad = new TextEncoder().encode("finance-atlas-web-vault-v1");
 const storeName = "workspace";
+const resumeToken = "atlas-tab-session";
+
+// The tab holds the wrapping secret. IndexedDB contains only the wrapped vault key.
+export async function rememberSession(passphrase: string, salt: Uint8Array<ArrayBuffer>, idleMinutes = 30) {
+  await forgetSession();
+  const token = crypto.randomUUID();
+  const secret = crypto.getRandomValues(new Uint8Array(32));
+  const wrappingKey = await crypto.subtle.importKey("raw", secret, "AES-GCM", false, ["wrapKey"]);
+  const key = await deriveKey(passphrase, salt, true);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = await crypto.subtle.wrapKey("raw", key, wrappingKey, {name: "AES-GCM", iv, additionalData: salt});
+  const minutes = [5, 15, 30].includes(idleMinutes) ? idleMinutes : 30;
+  await preference("session/" + token, {wrapped, iv, salt: base64(salt), expires: Date.now() + minutes * 60_000});
+  sessionStorage.setItem(resumeToken, JSON.stringify({token, secret: base64(secret)}));
+  secret.fill(0);
+}
+
+export async function resumeSession(envelope: Envelope): Promise<CryptoKey | undefined> {
+  const stored = sessionStorage.getItem(resumeToken);
+  if (!stored) return;
+  const {token, secret} = JSON.parse(stored);
+  const saved = await preference<{wrapped: ArrayBuffer; iv: Uint8Array<ArrayBuffer>; salt: string; expires: number}>("session/" + token);
+  if (saved?.salt === base64(envelope.salt) && saved.expires > Date.now()) {
+    const wrappingKey = await crypto.subtle.importKey("raw", unbase64(secret), "AES-GCM", false, ["unwrapKey"]);
+    return crypto.subtle.unwrapKey("raw", saved.wrapped, wrappingKey, {name: "AES-GCM", iv: saved.iv, additionalData: envelope.salt}, "AES-GCM", false, ["encrypt", "decrypt"]);
+  }
+  await forgetSession();
+}
+
+export async function forgetSession() {
+  const stored = sessionStorage.getItem(resumeToken);
+  sessionStorage.removeItem(resumeToken);
+  if (!stored) return;
+  const {token} = JSON.parse(stored);
+  const db = await database();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("preferences", "readwrite");
+      tx.objectStore("preferences").delete("session/" + token);
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error);
+    });
+  } finally {db.close();}
+}
 const recordsStore = "deviceRecords";
 const deviceBackupFormat = "finance-atlas-device-backup-v1";
 const deviceBackupAad = new TextEncoder().encode(deviceBackupFormat);
@@ -167,14 +211,14 @@ export async function readVault(): Promise<Envelope | null> {
   } finally { db.close(); }
 }
 
-export async function deriveKey(passphrase: string, salt: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+export async function deriveKey(passphrase: string, salt: Uint8Array<ArrayBuffer>, extractable = false): Promise<CryptoKey> {
   if (!globalThis.crypto?.subtle) throw new Error("Open Finance Atlas on HTTPS or localhost to use the local vault.");
   const bytes = new TextEncoder().encode(passphrase);
   try {
     const material = await crypto.subtle.importKey("raw", bytes, "PBKDF2", false, ["deriveKey"]);
     return await crypto.subtle.deriveKey(
       {name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256"},
-      material, {name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]
+      material, {name: "AES-GCM", length: 256}, extractable, ["encrypt", "decrypt"]
     );
   } finally { bytes.fill(0); }
 }

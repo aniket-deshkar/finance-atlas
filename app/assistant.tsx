@@ -18,6 +18,8 @@ type Source = {view: View; id?: string};
 type AttachedDocument = ExtractedDocument & {staged?: Staged[]};
 const label = (view: View) => view === "Overview" ? "Dashboard" : view;
 const sourceViews = views.filter(view => !["Assistant", "Data & settings", "Documents", "Receipts", "Cashback", "Reconciliation"].includes(view));
+const defaultModel = (catalog: Catalog | null) => catalog?.models.some(model => model.id === "gemini-3.1-flash-lite" && model.enabled)
+  ? "gemini-3.1-flash-lite" : "local";
 
 function ModelPicker({catalog, id, reasoning, select, reason}: {catalog: Catalog | null; id: string; reasoning: string;
   select: (id: string) => void; reason: (level: string) => void}) {
@@ -41,7 +43,7 @@ export function AssistantSettings({ledger, save, busy, cloudControls}: FeaturePr
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [usage, setUsage] = useState<{month: string; used: number; limit: number; runs: Usage[]} | null>(null);
   const [message, setMessage] = useState("");
-  const defaults = row(ledger.settings.assistantPreferences), id = field(defaults, "model") || "local";
+  const defaults = row(ledger.settings.assistantPreferences), id = field(defaults, "model") || defaultModel(catalog);
   function setDefault(key: string, value: string) {
     void save(s => ({...s, settings: {...s.settings, assistantPreferences: {...row(s.settings.assistantPreferences), [key]: value}}}));
   }
@@ -159,7 +161,7 @@ export function Assistant({ledger, month, asOf, view, target, vaultKey, scope, p
   }, [displayed, turns, loading]);
 
   const defaults = row(ledger.settings.assistantPreferences);
-  const modelId = chosen ?? (field(defaults, "model") || "local");
+  const modelId = chosen ?? (field(defaults, "model") || defaultModel(catalog));
   const model = catalog?.models.find(item => item.id === modelId && item.enabled);
   const preferred = level || field(defaults, "reasoning");
   const reasoning = model && (model.levels.includes(preferred) ? preferred : model.fallback);
