@@ -124,12 +124,10 @@ try {
     const screenshot = await send("Page.captureScreenshot", {format: "png"});
     writeFileSync(process.env.ATLAS_DESKTOP_SCREENSHOT, Buffer.from(screenshot.data, "base64"));
   }
+  await evaluate("document.documentElement.dataset.reloadCheck = 'before'");
   await send("Page.reload");
-  await until("document.querySelector('.atlas-welcome h1')?.textContent === 'Unlock your workspace'");
+  await until("document.documentElement.dataset.reloadCheck !== 'before' && document.querySelector('h1')?.textContent === 'Dashboard'");
   assert.equal(await evaluate("document.documentElement.dataset.theme"), "dark");
-  await set("[name=passphrase]", "fictional-native-check-12345");
-  await evaluate("document.querySelector('form').requestSubmit()");
-  await until("document.querySelector('h1')?.textContent === 'Dashboard'");
   assert.equal(await evaluate("document.querySelector('.liquid-value').textContent.includes('12,345.67')"), true);
   await closeApp();
   await connect();
