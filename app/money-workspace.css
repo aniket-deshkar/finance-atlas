@@ -8,12 +8,15 @@
 .atlas-preference-body .appearance-controls { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; }
 .atlas-file-zone {
   display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .9rem;
-  border: 1px dashed var(--green); border-radius: 1rem; padding: clamp(.9rem, 2.4vw, 1.5rem);
-  background: color-mix(in srgb,var(--white) 86%,var(--blue)); min-height: 6rem;
+  border: 1px dashed var(--green); border-radius: .65rem; padding: .3rem .5rem;
+  background: color-mix(in srgb,var(--white) 94%,var(--blue)); min-height: 50px;
 }
 .atlas-file-zone[data-dragging], .atlas-file-zone:focus-within { outline: 2px solid var(--green); outline-offset: 2px; }
 .atlas-file-zone[data-disabled] { opacity: .7; }
-.atlas-file-glyph { display: grid; place-items: center; width: 2.7rem; height: 2.7rem; border-radius: .8rem; background: var(--atlas-accent); color: var(--atlas-accent-ink); }
+.atlas-file-intake { min-width: 0; display: grid; gap: .5rem; }
+.atlas-file-label { font-weight: 650; font-size: .875rem; }
+.atlas-file-format { font-size: .8rem; color: var(--muted); }
+.atlas-file-glyph { display: grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: .5rem; background: var(--atlas-accent); color: var(--atlas-accent-ink); }
 .atlas-file-zone small { display: block; font-size: .83rem; font-weight: 400; color: var(--muted); margin-top: .25rem; }
 button.atlas-upload-action { min-height: 42px; padding-inline: .9rem; background: var(--atlas-accent); color: var(--atlas-accent-ink); border-color: transparent; white-space: nowrap; transition: transform .16s ease-out; }
 button.atlas-upload-action:hover { background: #d2e8ff; color: #142e56; }
@@ -34,7 +37,7 @@ button.atlas-upload-action:active { transform: scale(.96); }
 .atlas-pulse i:nth-child(2) { animation-delay: .12s; }
 .atlas-pulse i:nth-child(3) { animation-delay: .24s; }
 @keyframes atlas-upload-pulse { from { opacity: .5; transform: translateY(0); } to { opacity: 1; transform: translateY(-.2rem); } }
-.statement-setup:has(.atlas-file-intake) { grid-template-columns: minmax(10rem, .65fr) minmax(0,1.35fr); align-items: center; }
+.statement-setup:has(.atlas-file-intake) { grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; }
 .balance-hero.atlas-worth { color: #f6f8ff; background: radial-gradient(ellipse at 86% 5%,#394f87,#1f315c 45%,#122343); }
 .atlas-worth h2 { font-size: 1rem; font-weight: 650; margin: 0; color: inherit; }
 .atlas-worth .local-badge { white-space: nowrap; }
@@ -50,6 +53,21 @@ button.atlas-upload-action:active { transform: scale(.96); }
 .atlas-worth-column { position: relative; width: 90%; height: 100%; background: linear-gradient(to bottom,transparent calc(50% - 1px),var(--line) 50%,transparent calc(50% + 1px)); }
 .atlas-worth-column i { position: absolute; left: 20%; right: 20%; bottom: 50%; background: #5480c2; border-radius: .3rem .3rem 0 0; }
 .atlas-worth-column i[data-negative="true"] { top: 50%; bottom: auto; background: var(--red); border-radius: 0 0 .3rem .3rem; }
+.workspace .back-button span { display: inline; }
+.workspace .back-button { min-height: 42px; }
+@media (prefers-reduced-motion: no-preference) {
+  .workspace[data-motion="full"] .balance-hero,
+  .workspace[data-motion="full"] .atlas-account,
+  .workspace[data-motion="full"] .atlas-worth-history { animation: atlas-reveal .55s cubic-bezier(.22,1,.36,1) both; }
+  .workspace[data-motion="full"] .atlas-account { transition: transform .22s ease, box-shadow .22s ease; }
+  .workspace[data-motion="full"] .atlas-account:hover { transform: translateY(-4px); box-shadow: 0 12px 28px #0002; }
+  .workspace[data-motion="full"] .atlas-worth-column i { transform-origin: bottom; animation: atlas-grow .65s ease-out both; }
+  .workspace[data-motion="full"] .background-chart { animation: atlas-reveal .9s ease-out both; }
+  .workspace[data-motion="full"] .background-coins { animation: atlas-coin-arrive 1.2s ease-out both; }
+}
+@keyframes atlas-reveal { from {opacity:0;transform:translateY(14px)} to {opacity:1;transform:translateY(0)} }
+@keyframes atlas-grow { from {transform:scaleY(0)} to {transform:scaleY(1)} }
+@keyframes atlas-coin-arrive { from {opacity:0;transform:translateY(12px) rotate(-8deg)} to {opacity:1;transform:translateY(0) rotate(0)} }
 @media (max-width: 720px) {
   .workspace .atlas-preference-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .workspace .atlas-preference-list .atlas-preference-tab { justify-content: start; }

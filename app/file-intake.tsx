@@ -13,9 +13,10 @@ export function FileIntake({label, name, accept, format, disabled, multiple, onF
     onFileReject={({files}) => onError(files.map(({file}) => file.name).join(", ") + " could not be selected. Check the format, size and file count.")}
     onFileAccept={({files}) => {if (files.length) onFiles(files);}}>
     <FileUpload.HiddenInput aria-label={label} name={name} />
+    <FileUpload.Label className="atlas-file-label">{label}</FileUpload.Label>
     <FileUpload.Dropzone className="atlas-file-zone" disableClick>
       <span className="atlas-file-glyph"><Icon name="file" /></span>
-      <span><strong>{label}</strong><small>{format}</small></span>
+      <span className="atlas-file-format">{format}</span>
       <FileUpload.Trigger className="atlas-upload-action">Choose {multiple ? "files" : "file"}</FileUpload.Trigger>
     </FileUpload.Dropzone>
   </FileUpload.Root>;
